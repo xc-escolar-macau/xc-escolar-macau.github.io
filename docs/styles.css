@@ -952,3 +952,17 @@ a.medal:hover { background: var(--surface-2); }
 .ct-grid small { display: block; font-size: 12px; color: var(--text-2); }
 .ct-hist { display: inline-flex; align-items: center; min-height: var(--tap); margin-top: var(--s1); color: var(--accent); font-weight: 600; }
 .lv-links { margin: var(--s2) 0 0; }
+
+/* ---------- 比賽相片（#/photos） ---------- */
+.ph-bar { display: flex; align-items: center; gap: var(--s2); margin: var(--s4) 0 var(--s2); font-size: 15px; }
+.ph-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.ph-tile { display: block; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--surface); cursor: pointer; min-height: var(--tap); }
+.ph-tile img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+.ph-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.ph-modal .cm-img { aspect-ratio: auto; min-height: 200px; }
+.ph-modal .cm-img img { height: auto; max-height: 68vh; }
+.ph-modal .cm-img img.ph-low { filter: blur(2px); opacity: .7; }
+.ph-modal .muted-note a { color: var(--accent); }
+.ph-nav { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--s2); text-align: center; font-size: 14px; color: var(--text-2); }
+.ph-nav button { min-height: 40px; padding: 0 14px; }
+.ph-nav button:disabled { opacity: .35; }

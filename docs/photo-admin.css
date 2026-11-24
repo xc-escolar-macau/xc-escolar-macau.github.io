@@ -1,0 +1,40 @@
+/* 相片上載：沿用 live-admin.css 的色彩及按鈕，以下只加本頁所需 */
+.bar { margin-top: 4px; }
+.pick { position: relative; display: flex; align-items: center; gap: 14px; margin-top: 10px; padding: 16px; border-radius: 16px; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+.pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; min-height: 0; }
+.pick-plus { font-size: 34px; font-weight: 800; line-height: 1; }
+.pick b { display: block; font-size: 18px; }
+.pick small { display: block; font-size: 12px; opacity: .8; margin-top: 2px; }
+.pick:focus-within { outline: 3px solid var(--text); outline-offset: 2px; }
+.prep { margin: 8px 2px 0; font-size: 13px; color: var(--warn); }
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+.stats div { padding: 10px; border-radius: 12px; background: var(--surface); text-align: center; }
+.stats b { display: block; font-family: var(--num); font-weight: 800; font-size: 30px; line-height: 1; }
+.stats span { font-size: 12px; color: var(--muted); }
+.queue-msg { margin: 8px 0 0; padding: 10px 12px; border-radius: 12px; background: rgb(243 220 154 / .12); color: var(--warn); font-size: 13px; }
+
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 12px; }
+.tabs button { background: var(--surface); font-size: 14px; }
+.tabs button.on { background: var(--text); color: var(--bg); font-weight: 700; }
+.tab-note { margin: 8px 2px; }
+
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.card { display: grid; padding: 0; overflow: hidden; border-radius: 12px; background: var(--surface); text-align: left; min-height: 0; }
+.card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--surface-2); }
+.card .meta { display: grid; gap: 2px; padding: 8px 10px 10px; }
+.card .meta b { font-family: var(--num); font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
+.card .meta small { font-size: 12px; color: var(--muted); }
+.card .why, .why { color: var(--warn); }
+.card.q { opacity: .85; }
+.rv { font-style: normal; color: var(--accent); }
+.empty { grid-column: 1 / -1; text-align: center; padding: 24px 0; }
+
+dialog .big { width: 100%; max-height: 52vh; object-fit: contain; border-radius: 12px; background: #000; }
+dialog p { margin: 0; font-size: 13px; }
+.who-list { display: grid; gap: 4px; font-size: 14px; }
+.who-list small { color: var(--muted); }
+.who-bad { color: var(--red); }
+.num { font-family: var(--num); font-weight: 700; font-size: 17px; }
+.sheet-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sheet-btns .primary { grid-column: 1 / -1; }

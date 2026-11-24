@@ -12,30 +12,7 @@ EDS = {e["edition"]: e for e in DATA["editions"]}
 PRED_MA_TOP = next(x["pid"] for x in json.loads((ROOT / "docs/data/preview48.json").read_text(encoding="utf-8"))["categories"]["MA"]["prediction"] if x.get("pid"))
 
 
-def free_port():
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
-
-
-@pytest.fixture(scope="session")
-def base_url():
-    port = free_port()
-    proc = subprocess.Popen([sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1", "--directory", str(ROOT / "docs")],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(50):
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close(); break
-        except OSError:
-            time.sleep(0.1)
-    yield f"http://127.0.0.1:{port}"
-    proc.terminate()
-
-
-@pytest.fixture(scope="session")
-def browser():
-    with sync_playwright() as p:
-        b = p.chromium.launch(channel="chrome", headless=True)
-        yield b
-        b.close()
+# base_url、browser 兩個共用 fixture 在 tests/conftest.py
 
 
 @pytest.fixture()
@@ -1201,7 +1178,7 @@ def test_live_admin_voice_fallback_and_errors(live):
 def test_preview_has_no_demo_link(page):
     """賽前預覽不再顯示「示範重播」入口（?demo= 網址保留作內部測試）"""
     go(page, "#/preview?c=MA")
-    expect(page.locator(".link-row a")).to_have_count(2)
+    expect(page.locator(".link-row a")).to_have_count(3)   # 即時成績、完賽紀念卡、比賽相片
     expect(page.locator('a[href*="demo="]')).to_have_count(0)
 
 

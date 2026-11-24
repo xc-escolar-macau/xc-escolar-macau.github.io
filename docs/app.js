@@ -120,6 +120,12 @@
       ctGo: "查詢", ctNone: "找不到紀錄：請檢查號碼布及姓名，或該組別尚未開放。", ctNet: "暫時未能連線，請稍後再試。", ctNeed: "請輸入號碼布及姓名。",
       ctCat: "組別", ctPlace: "名次", ctTime: "完成時間", ctOf: (n) => `完賽 ${n} 人`, ctExport: "匯出完賽紀念卡", ctHist: "查看歷屆成績",
       ctHeat: (h) => `第 ${h} 組`, ctPlaceV: (p) => `第 ${p} 名`,
+      phBtn: "比賽相片", phTitle: (n) => `第${n}屆比賽相片`,
+      phNote: "非官方相片，由網站管理員在比賽中拍攝。輸入號碼布及姓名，即可找到有你號碼布的相片並下載；相片號碼布由電腦辨識，未必齊全。",
+      phNeed: "請輸入號碼布及姓名。", phNone: "暫時未有你的相片：請檢查號碼布及姓名；比賽期間相片會陸續加入，可稍後按「更新」。",
+      phCount: (n) => `找到 ${n} 張相片`, phOpen: (i, n) => `相片 ${i}／${n}`, phDl: "下載相片", phPrev: "上一張", phNext: "下一張",
+      phRemove: "申請移除此相片", phCode: (c) => `相片編號 ${c}（申請移除時請填寫）`, phExpired: "相片保留至 2027 年 8 月 31 日，現已下架。",
+      phKeep: "相片保留至 2027 年 8 月 31 日。", phFail: "未能載入相片，請稍後再試。",
       invBtn: "匯出邀請卡", csLabel: "榮譽卡款式", cs_dash: "衝線", cs_trail: "山徑", cs_bib: "號碼布", cs_classic: "經典", cardBtn: "匯出榮譽卡", cardSave: "下載圖片", cardShare: "分享", cardClose: "關閉", cardFail: "未能產生圖片，請稍後再試。",
       cardNote: "圖片只使用本網站已公開的成績資料。手機可按「分享」儲存至相簿或傳送給朋友。",
     },
@@ -240,6 +246,12 @@
       ctGo: "Search", ctNone: "No record found. Check the bib number and name, or the category has not been released yet.", ctNet: "Connection problem. Please try again later.", ctNeed: "Enter your bib number and name.",
       ctCat: "Category", ctPlace: "Place", ctTime: "Time", ctOf: (n) => `${n} finishers`, ctExport: "Export finisher card", ctHist: "See past results",
       ctHeat: (h) => `Heat ${h}`, ctPlaceV: (p) => `#${p}`,
+      phBtn: "Race photos", phTitle: (n) => `Edition ${n} race photos`,
+      phNote: "Unofficial photos taken during the race by the site editor. Enter your bib number and name to find and download photos showing your bib. Bibs are read by computer, so some photos may be missed.",
+      phNeed: "Enter your bib number and name.", phNone: "No photos of you yet. Check the bib number and name; photos are added during the race, so try Refresh later.",
+      phCount: (n) => `${n} photo${n === 1 ? "" : "s"} found`, phOpen: (i, n) => `Photo ${i} of ${n}`, phDl: "Download photo", phPrev: "Previous", phNext: "Next",
+      phRemove: "Request removal of this photo", phCode: (c) => `Photo code ${c} (quote it in your request)`, phExpired: "Photos were kept until 31 August 2027 and have now been removed.",
+      phKeep: "Photos are kept until 31 August 2027.", phFail: "Could not load the photo. Please try again later.",
       invBtn: "Export invitation", csLabel: "Card style", cs_dash: "Sprint", cs_trail: "Trail", cs_bib: "Race bib", cs_classic: "Classic", cardBtn: "Export honours card", cardSave: "Download image", cardShare: "Share", cardClose: "Close", cardFail: "Could not create the image. Please try again.",
       cardNote: "The card uses only results already published on this site. On a phone, use Share to save it to your photos.",
     },
@@ -926,8 +938,10 @@
         </div>
         <button class="card-btn" id="ctExport" type="button">${esc(t("ctExport"))}</button>
         ${r.pid && PEOPLE.has(r.pid) ? `<a class="ct-hist" href="#/p/${esc(r.pid)}">${esc(t("ctHist"))} ›</a>` : ""}
+        <a class="ct-hist" id="ctPhotos" href="#/photos${event !== String(ed) ? "?ev=" + event : ""}">${esc(t("phBtn"))} ›</a>
       </section>`;
       $("#ctExport").onclick = () => openCertCard(r, ed);
+      $("#ctPhotos").onclick = () => { PH_LAST = { event, bib, name }; };
     };
   }
   function openCertCard(r, ed) {
@@ -938,6 +952,85 @@
       list: CARD_STYLES.map((k) => [k, t("cs_" + k)]), current: st,
       pick: (k) => { try { localStorage.setItem("xc-card-style", k); } catch (e) { /* 無痕模式 */ } },
     });
+  }
+  /* ---------- 比賽相片（第 48 屆起）：號碼布＋姓名兩者對得上才回傳相片（supabase/008_photos.sql 的 xc_photo_lookup） ---------- */
+  const PH_END = Date.parse("2027-09-01T00:00:00+08:00");   // 保留一個學年
+  let PH_LAST = null;   // 本次瀏覽最近一次查詢（只存在記憶體，不寫入網址或瀏覽器）
+  const photoUrl = (path) => `${DB.site.views.url}/storage/v1/object/public/xc-photos/${path}`;
+  const refreshBtn = (id) => `<button class="lv-refresh" id="${id}" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${t("lvRefresh")}</button>`;
+  function renderPhotos(params) {
+    const ed = (DB.race && DB.race.edition) || 48;
+    const event = (params.get("ev") || String(ed)).replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const expired = (window.XC_NOW || Date.now()) >= PH_END;   // XC_NOW 只供測試
+    view.innerHTML = `<h1 class="page-title">${esc(t("phTitle", ed))}${event !== String(ed) ? ' <span class="lv-pill demo">TEST</span>' : ""}</h1>
+      <p class="lv-note">${esc(t("phNote"))} ${esc(t("phKeep"))}</p>
+      ${expired ? `<p class="banner">${esc(t("phExpired"))}</p>` : `<form id="phForm" class="ct-form" autocomplete="off" novalidate>
+        <label><span>${esc(t("ctBib"))}</span><input id="phBib" inputmode="numeric" pattern="[0-9]*" maxlength="4" enterkeyhint="next"></label>
+        <label><span>${esc(t("ctName"))}</span><input id="phName" maxlength="60" enterkeyhint="search" autocapitalize="characters"></label>
+        <button class="btn-primary ct-go" type="submit">${esc(t("ctGo"))}</button>
+      </form>
+      <div id="phOut" aria-live="polite"></div>`}`;
+    if (expired) return;
+    const last = PH_LAST && PH_LAST.event === event ? PH_LAST : null;
+    const run = async () => {
+      const out = $("#phOut"), bib = parseInt($("#phBib").value.replace(/\D/g, ""), 10), name = $("#phName").value.trim();
+      if (!bib || name.length < 2) { out.innerHTML = `<p class="banner">${esc(t("phNeed"))}</p>`; return; }
+      out.innerHTML = `<div class="skeleton"><i class="sk-row"></i></div>`;
+      let list = null;
+      try { list = await rpc("xc_photo_lookup", { p_event: event, p_bib: bib, p_name: name }); }
+      catch (err) { if ($("#phOut")) out.innerHTML = `<p class="banner">${esc(t("ctNet"))}</p>`; return; }
+      if (!$("#phOut")) return;
+      PH_LAST = { event, bib, name };
+      if (!list || !list.length) {
+        out.innerHTML = `<p class="banner">${esc(t("phNone"))}</p><div class="ph-bar">${refreshBtn("phRefresh")}</div>`;
+      } else {
+        out.innerHTML = `<div class="ph-bar"><b>${esc(t("phCount", list.length))}</b>${refreshBtn("phRefresh")}</div>
+          <div class="ph-grid">${list.map((p, i) => `<button type="button" class="ph-tile" data-i="${i}" aria-label="${esc(t("phOpen", i + 1, list.length))}"><img alt="" loading="lazy" src="${esc(photoUrl(p.t))}"></button>`).join("")}</div>`;
+        out.querySelectorAll(".ph-tile").forEach((b) => { b.onclick = () => openPhoto(list, +b.dataset.i, ed); });
+      }
+      $("#phRefresh").onclick = run;
+    };
+    $("#phForm").onsubmit = (e) => { e.preventDefault(); run(); };
+    if (last) { $("#phBib").value = last.bib; $("#phName").value = last.name; run(); }
+  }
+  function openPhoto(list, i, ed) {
+    const box = document.createElement("div");
+    box.className = "card-modal ph-modal"; box.setAttribute("role", "dialog"); box.setAttribute("aria-modal", "true");
+    document.body.appendChild(box);
+    const site = DB.site || {};
+    let url = null;
+    const close = () => { box.remove(); document.removeEventListener("keydown", onKey); if (url) URL.revokeObjectURL(url); };
+    const onKey = (e) => { if (e.key === "Escape") close(); else if (e.key === "ArrowLeft" && i > 0) show(i - 1); else if (e.key === "ArrowRight" && i < list.length - 1) show(i + 1); };
+    document.addEventListener("keydown", onKey);
+    box.addEventListener("click", (e) => { if (e.target === box) close(); });
+    const show = async (k) => {
+      i = k;
+      const p = list[i], code = String(p.id).slice(0, 8), ext = /\.jpg$/.test(p.f) ? "jpg" : "webp";
+      const file = `第${ed}屆學界越野跑_${code}.${ext}`;
+      box.setAttribute("aria-label", t("phOpen", i + 1, list.length));
+      box.innerHTML = `<div class="cm-inner">
+        <div class="ph-nav"><button type="button" class="cm-close" id="phPrev" ${i ? "" : "disabled"}>${t("phPrev")}</button><span>${esc(t("phOpen", i + 1, list.length))}</span><button type="button" class="cm-close" id="phNext" ${i < list.length - 1 ? "" : "disabled"}>${t("phNext")}</button></div>
+        <div class="cm-img"><img src="${esc(photoUrl(p.t))}" alt="" class="ph-low"></div>
+        <div class="cm-btns"><a class="btn-primary" id="phSave" aria-disabled="true">${t("phDl")}</a><button type="button" class="cm-share" id="phShare" hidden>${t("cardShare")}</button><button type="button" class="cm-close" id="phClose">${t("cardClose")}</button></div>
+        <p class="muted-note">${esc(t("phCode", code))}${site.removal_url ? ` · <a href="${esc(site.removal_url)}" target="_blank" rel="noopener">${esc(t("phRemove"))}</a>` : ""}</p></div>`;
+      $("#phClose").onclick = close; $("#phClose").focus();
+      $("#phPrev").onclick = () => show(i - 1); $("#phNext").onclick = () => show(i + 1);
+      try {
+        const r = await fetch(photoUrl(p.f), { cache: "force-cache" });
+        if (!r.ok) throw new Error(String(r.status));
+        const blob = await r.blob();
+        if (!box.isConnected || list[i] !== p) return;
+        if (url) URL.revokeObjectURL(url);
+        url = URL.createObjectURL(blob);
+        box.querySelector(".cm-img").innerHTML = `<img src="${url}" alt="${esc(t("phOpen", i + 1, list.length))}">`;
+        const a = $("#phSave"); a.href = url; a.download = file; a.removeAttribute("aria-disabled");
+        const f = new File([blob], file, { type: blob.type });
+        if (navigator.canShare && navigator.canShare({ files: [f] })) { const sh = $("#phShare"); sh.hidden = false; sh.onclick = () => navigator.share({ files: [f], title: file }).catch(() => { /* 使用者取消 */ }); }
+      } catch (e) {
+        if (box.isConnected && list[i] === p) box.querySelector(".cm-img").insertAdjacentHTML("beforeend", `<p class="banner">${esc(t("phFail"))}</p>`);
+      }
+    };
+    show(i);
   }
   // 榮譽卡款式：衝線、山徑、號碼布（docs/card-styles.js）及經典（docs/card.js）；記住使用者上次的選擇
   const CARD_STYLES = ["dash", "trail", "bib", "classic"];
@@ -1237,7 +1330,7 @@
     view.innerHTML = `
       <h1 class="page-title pv-title">${esc(t("pvTitleZh"))}<small lang="pt">${esc(t("pvTitlePt"))}</small></h1>
       ${me ? meCard(me, cat, info) : ""}
-      <div class="link-row"><a href="#/live">${t("lvGo")} ›</a><a href="#/cert">${t("ctBtn")} ›</a>
+      <div class="link-row"><a href="#/live">${t("lvGo")} ›</a><a href="#/cert">${t("ctBtn")} ›</a><a href="#/photos">${t("phBtn")} ›</a>
         <button class="lv-refresh" id="pvRefresh" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${t("lvRefresh")}</button></div>
       ${previewHero(race, pv)}
       <div class="filters">
@@ -1608,7 +1701,7 @@
       <h1 class="page-title lv-title">${esc(t("lvTitle", demo ? LIVE.demoEd : (DB.race && DB.race.edition) || 48))}<span class="lv-pill demo" id="lvPill">${demo ? t("lvDemo") : event !== String((DB.race && DB.race.edition) || 48) ? "TEST" : t("lvReady")}</span>
         <button class="lv-refresh" id="lvRefresh" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${t("lvRefresh")}</button></h1>
       <p class="lv-note">${demo ? t("lvDemoNote", LIVE.demoEd) : t("lvNote")} <span id="lvUpdated" class="lv-upd"></span></p>
-      ${demo ? "" : `<div class="link-row lv-links"><a href="#/cert${event !== String((DB.race && DB.race.edition) || 48) ? "?ev=" + event : ""}">${t("ctBtn")} ›</a></div>`}
+      ${demo ? "" : `<div class="link-row lv-links"><a href="#/cert${event !== String((DB.race && DB.race.edition) || 48) ? "?ev=" + event : ""}">${t("ctBtn")} ›</a><a href="#/photos${event !== String((DB.race && DB.race.edition) || 48) ? "?ev=" + event : ""}">${t("phBtn")} ›</a></div>`}
       <div class="chips" id="lvTabs"></div>
       <div id="lvBody"><div class="skeleton"><i class="sk-row"></i><i class="sk-row"></i></div></div>`;
     $("#lvRefresh").onclick = liveRefresh;
@@ -2028,8 +2121,9 @@
     else if (path === "/preview") { nav = ""; renderPreview(params); }
     else if (path === "/privacy") { nav = ""; renderPrivacy(); }
     else if (path === "/cert") { nav = ""; renderCert(params); }
+    else if (path === "/photos") { nav = ""; renderPhotos(params); }
     else renderNotFound();
-    if ((path.startsWith("/p/") || path.startsWith("/s/") || path === "/preview" || path === "/privacy" || path === "/live" || path === "/cert") && !view.querySelector(".wip")) {
+    if ((path.startsWith("/p/") || path.startsWith("/s/") || path === "/preview" || path === "/privacy" || path === "/live" || path === "/cert" || path === "/photos") && !view.querySelector(".wip")) {
       view.insertAdjacentHTML("afterbegin", backButton());
       wireBack();
     }
