@@ -12,7 +12,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { encodeBase64 } from "jsr:@std/encoding@1.0.5/base64";
 
-const MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-2.5-flash";
+const MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-3.8-flash";   // 2026-11 最新穩定 Flash；如不相容可設 secret GEMINI_MODEL=gemini-2.5-flash
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -72,7 +72,8 @@ Deno.serve(async (req) => {
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ inline_data: { mime_type: mime, data: encodeBase64(bytes) } }, { text: PROMPT }] }],
-      generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: SCHEMA },
+      // Gemini 3 起 temperature 等取樣參數已停用（日後會回傳 400），故不設定
+      generationConfig: { responseMimeType: "application/json", responseSchema: SCHEMA },
     }),
   });
   if (r.status === 429) {

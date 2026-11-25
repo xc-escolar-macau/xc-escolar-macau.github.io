@@ -1,5 +1,5 @@
 -- 比賽相片（第 48 屆起）：比賽中以手機即時上載，Gemini 辨識號碼布，符合條件即自動公開
--- 須在 004–007 之後執行；可重複執行
+-- 須在 004–007、009 之後執行；可重複執行
 -- 設計：
 --   * 相片檔放公開 bucket xc-photos，檔名為隨機 UUID，不開放列出檔案；只有管理員可上載／刪除
 --   * 表 xc_photos 只限管理員讀寫；公眾只能經 xc_photo_lookup()「號碼布＋姓名」兩者對得上才取得該號碼布的已公開相片
@@ -94,7 +94,7 @@ as $$
   ), h as (
     select x.start_ms, x.status,
            (select max(e.at_ms) from public.xc_live_entries e
-             where e.event = x.event and e.cat = x.cat and e.heat = x.heat and not e.deleted) as last_ms
+             where e.event = x.event and e.cat = x.cat and e.heat = x.heat and not e.deleted and not coalesce(e.dns, false)) as last_ms
     from public.xc_live_heats x join r on x.cat = r.cat and x.heat = r.heat
     where x.event = p_event and x.start_ms is not null
   )
