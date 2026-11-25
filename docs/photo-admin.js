@@ -1,10 +1,12 @@
-/* 相片上載（工作人員用）：比賽中以手機即時上載，雲端以 Gemini 辨識號碼布
+/* 相片上載（工作人員用）：手機揀相上載；預設人手標號碼布（免費方案，賽後標），site.json 設 photo_ai: true 才改用 Gemini 辨識
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
    - 揀相片 → 手機內壓縮成長邊 1600px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
    - 壓縮後的檔案存於本機 IndexedDB 佇列：斷網、重新整理頁面都不會遺失，恢復後自動續傳
    - 每張：上載兩個檔 → 寫入 xc_photos → 呼叫 Edge Function xc-photo-bibs 辨識並判斷是否自動公開
    - Gemini 配額用完（429）時按建議時間稍後重試
-   - 待覆核：改正號碼布後「批准公開」；或「移除」（刪除檔案，網址即時失效） */
+   - 待覆核：輸入／改正號碼布後「批准公開」（自動跳到下一張）；或「移除」（刪除檔案，網址即時失效）
+   - 人手標提示（xc_photo_hints）：拍攝時間前後 20 秒經過終點的號碼布（一按加入）、當時在跑道上的組別、
+     已輸入號碼布該時段是否在跑道上 */
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
@@ -14,11 +16,12 @@
   const catLabel = (c) => `${c[0] === "M" ? "男" : "女"}${c[1]}`;
   const BUCKET = "xc-photos", FULL = 1600, THUMB = 400, PARALLEL = 2;
 
-  let sb = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map();
+  let sb = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map(), ROSTER_HEATS = new Map();
   const st = Object.assign({ event: "48", tab: "pending" }, store.get("xc-photo-state", {}));
   const save = () => store.set("xc-photo-state", st);
   const photos = new Map(); // 伺服器上的相片紀錄（本 event）
   let rev = 0, online = true, quotaUntil = 0, noKey = false;
+  const AI = () => !!(SITE && SITE.photo_ai);   // false＝人手標（預設）
 
   /* ---------- 本機佇列（IndexedDB） ---------- */
   const IDB = (() => {
@@ -171,12 +174,13 @@
       if (q.stage === "uploaded") {
         const row = { id: q.id, event: q.event, full_path: p.full, thumb_path: p.thumb, w: q.w, h: q.h, taken_ms: q.taken_ms, taken_src: q.taken_src,
           camera: q.camera || null, clock_off_s: q.clock_off_s || null, src_key: q.src_key || null };
+        if (!AI()) Object.assign(row, { status: "pending", reason: "未標號碼布" });
         const { error } = await sb.from("xc_photos").upsert(row, { onConflict: "id", ignoreDuplicates: true });
         if (error) throw error;
         q.stage = "row"; q.err = ""; await IDB.put(q);
       }
       if (q.stage === "row") {
-        const r = await recognise(q.id);
+        const r = AI() ? await recognise(q.id) : {};
         if (r.wait) { q.next_at = Date.now() + r.wait * 1000; q.err = r.msg; await IDB.put(q); return; }
         await IDB.del(q.id);
         queue = queue.filter((x) => x.id !== q.id);
@@ -218,7 +222,8 @@
   async function loadRoster() {
     ROSTER.clear();
     const { data, error } = await sb.from("xc_live_roster").select("bib,cat,heat,abbr,name").eq("event", st.event).limit(5000);
-    if (!error) for (const r of data) ROSTER.set(r.bib, r);
+    ROSTER_HEATS.clear();
+    if (!error) for (const r of data) { ROSTER.set(r.bib, r); ROSTER_HEATS.set(r.cat, Math.max(ROSTER_HEATS.get(r.cat) || 1, r.heat || 1)); }
   }
   const pubUrl = (path) => `${SITE.views.url}/storage/v1/object/public/${BUCKET}/${path}`;
   const who = (bib) => {
@@ -231,13 +236,16 @@
   const when = (p) => `${hhmm(p.taken_ms)}${srcLabels[p.taken_src] || ""}${p.clock_off_s ? "（已校正）" : ""}`;
 
   /* ---------- 畫面 ---------- */
+  const byTimeAsc = (a, b) => (a.taken_ms || 0) - (b.taken_ms || 0) || String(a.id).localeCompare(String(b.id));
+  const byTimeDesc = (a, b) => byTimeAsc(b, a);
+  const pendingList = () => [...photos.values()].filter((p) => p.status === "pending" || p.status === "uploaded").sort(byTimeAsc);
   function setSync() {
     const el = $("#sync"), n = queue.length;
     el.textContent = !online ? `離線 · 待上載 ${n}` : n ? `上載中 ${n}` : `已同步 · 名單 ${ROSTER.size}`;
     el.className = "sync " + (!online ? "bad" : n ? "busy" : "ok");
     const msg = $("#queueMsg");
     const waitQ = quotaUntil > Date.now();
-    msg.hidden = !(waitQ || noKey);
+    msg.hidden = !AI() || !(waitQ || noKey);
     msg.textContent = noKey ? "Gemini 金鑰未設定：相片照樣上載，設定後自動辨識。" : waitQ ? `Gemini 配額已滿，約 ${Math.ceil((quotaUntil - Date.now()) / 1000)} 秒後繼續辨識（免費層每分鐘次數有限）。` : "";
   }
   function renderAll() {
@@ -250,16 +258,17 @@
     if (st.tab === "queue") {
       const qs = queue.filter((q) => q.event === st.event);
       note.textContent = qs.length ? "壓縮後的相片暫存在本機，上載及辨識完成後自動清走。" : "本機沒有待上載的相片。";
-      g.innerHTML = qs.map((q) => `<div class="card q"><img alt="" src="${q.thumbUrl || (q.thumbUrl = URL.createObjectURL(q.thumb))}"><div class="meta"><b>${esc({ ready: "等候上載", uploaded: "已上載檔案", row: "辨識中" }[q.stage] || q.stage)}</b><small>${esc(q.err || "")}</small><small>${when(q)}</small></div></div>`).join("");
+      g.innerHTML = qs.map((q) => `<div class="card q"><img alt="" src="${q.thumbUrl || (q.thumbUrl = URL.createObjectURL(q.thumb))}"><div class="meta"><b>${esc({ ready: "等候上載", uploaded: "已上載檔案", row: AI() ? "辨識中" : "寫入紀錄" }[q.stage] || q.stage)}</b><small>${esc(q.err || "")}</small><small>${when(q)}</small></div></div>`).join("");
       setSync(); return;
     }
-    const show = (st.tab === "approved" ? appr : pend).sort((a, b) => (b.taken_ms || 0) - (a.taken_ms || 0));
-    note.textContent = st.tab === "approved" ? "已公開：運動員可用號碼布＋姓名查到。賽後請逐張再看一次（已覆核者標 ✓）。" : "待覆核：未公開。改正號碼布後按「批准公開」，或移除。";
+    const show = st.tab === "approved" ? appr.sort(byTimeDesc) : pend.sort(byTimeAsc);
+    note.textContent = st.tab === "approved" ? "已公開：運動員可用號碼布＋姓名查到。賽後請逐張再看一次（已覆核者標 ✓）。"
+      : AI() ? "待覆核：未公開。改正號碼布後按「批准公開」，或移除。" : "待標號碼布：按拍攝時間排列。逐張輸入相中號碼布後「批准公開」，會自動跳到下一張。";
     g.innerHTML = show.length ? show.map((p) => `<button class="card" type="button" data-id="${esc(p.id)}">
         <img alt="" loading="lazy" src="${esc(pubUrl(p.thumb_path))}">
         <div class="meta">
-          <b>${(p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []).map((n) => esc(n)).join("、") || "讀不到號碼布"}${p.reviewed ? ' <i class="rv">✓</i>' : ""}</b>
-          ${p.status === "uploaded" ? "<small>辨識中……</small>" : p.reason ? `<small class="why">${esc(p.reason)}</small>` : ""}
+          <b>${(p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []).map((n) => esc(n)).join("、") || (AI() ? "讀不到號碼布" : "未標號碼布")}${p.reviewed ? ' <i class="rv">✓</i>' : ""}</b>
+          ${p.status === "uploaded" ? (AI() ? "<small>辨識中……</small>" : "") : p.reason && p.reason !== "未標號碼布" ? `<small class="why">${esc(p.reason)}</small>` : ""}
           <small>${when(p)}</small>
         </div></button>`).join("") : `<p class="muted empty">${st.tab === "approved" ? "未有已公開的相片。" : "沒有待覆核的相片。"}</p>`;
     setSync();
@@ -273,29 +282,72 @@
     const start = (p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []);
     f.innerHTML = `<h2>覆核相片</h2>
       <img class="big" alt="" src="${esc(pubUrl(p.full_path))}">
-      <p class="muted">拍攝 ${when(p)}${p.camera ? ` · ${esc(p.camera)}` : ""}${p.clock_off_s ? `（相機${esc(fmtOff(p.clock_off_s))}）` : ""} · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}</p>
-      ${p.reason ? `<p class="why">${esc(p.reason)}</p>` : ""}
-      <label>相中號碼布（以空格或逗號分隔）<input id="bibsIn" inputmode="numeric" value="${esc(start.join(" "))}"></label>
+      <p class="muted">拍攝 ${when(p)}${p.camera ? ` · ${esc(p.camera)}` : ""}${p.clock_off_s ? `（相機${esc(fmtOff(p.clock_off_s))}）` : ""}${AI() ? ` · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}` : ""}</p>
+      ${p.reason && p.reason !== "未標號碼布" ? `<p class="why">${esc(p.reason)}</p>` : ""}
+      <div id="hints" class="hints" aria-live="polite"></div>
+      <label>相中號碼布（以空格或逗號分隔；按 Enter＝批准公開）<input id="bibsIn" inputmode="numeric" autocomplete="off" value="${esc(start.join(" "))}"></label>
       <div id="whoList" class="who-list"></div>
       <div class="sheet-btns">
         <button type="button" class="primary" id="approve">批准公開</button>
         <button type="button" class="ghost" id="keep">留待覆核</button>
-        <button type="button" class="ghost" id="again">重新辨識</button>
+        ${AI() ? '<button type="button" class="ghost" id="again">重新辨識</button>' : ""}
         <button type="button" class="danger" id="remove">移除</button>
         <button type="submit" class="ghost">關閉</button>
       </div>
       <p id="sheetMsg" class="msg" role="alert"></p>`;
-    const upd = () => { const b = parseBibs($("#bibsIn").value); $("#whoList").innerHTML = b.map(who).join("") || '<span class="muted">（沒有號碼布：不會被任何人查到）</span>'; $("#approve").disabled = !b.length || b.some((n) => !ROSTER.has(n)); };
-    $("#bibsIn").oninput = upd; upd();
-    const save2 = async (patch) => {
+    // 提示：拍攝時間前後經過終點的號碼布＋該時段在跑道上的組別；已輸入號碼布逐個檢查是否在跑道上
+    let offCourse = new Set(), hintSeq = 0, hintTimer = 0;
+    const loadHints = async () => {
+      const mine = ++hintSeq, b = parseBibs($("#bibsIn").value);
+      const { data, error } = await sb.rpc("xc_photo_hints", { p_id: id, p_bibs: b });
+      if (mine !== hintSeq || !$("#hints")) return;
+      if (error || !data) { $("#hints").innerHTML = '<p class="muted">未能載入提示（網絡）；仍可直接輸入號碼布。</p>'; return; }
+      offCourse = new Set((data.check || []).filter((c) => c.on_course === false).map((c) => c.bib));
+      const near = (data.near || []).filter((n) => ROSTER.has(n.bib));
+      const dtTxt = (dt) => Math.abs(dt) < 0.5 ? "同時衝線" : dt > 0 ? `相片後 ${Math.round(dt)} 秒衝線` : `相片前 ${Math.round(-dt)} 秒衝線`;
+      const cats = (data.cats || []).map((c) => `${catLabel(c.cat)}${(ROSTER_HEATS.get(c.cat) || 1) > 1 ? ` C${c.heat}` : ""}`);
+      $("#hints").innerHTML = (data.taken_ms == null ? '<p class="muted">這張相片沒有拍攝時間，未能提示。</p>' : "")
+        + (near.length ? `<p class="hint-h">終點紀錄：拍攝前後 20 秒經過終點（按一下加入）</p><div class="near">${near.map((n) => `<button type="button" class="chip" data-add="${n.bib}"><b class="num">${n.bib}</b> ${esc((ROSTER.get(n.bib) || {}).name || "")}<small>${dtTxt(n.dt)}${n.fin ? "" : "・中途經過"}</small></button>`).join("")}</div>` : "")
+        + (data.taken_ms != null ? `<p class="muted hint-cats">此時段在跑道上：${cats.length ? esc(cats.join("、")) : "沒有組別（可能是比賽前後的相片）"}</p>` : "");
+      upd(false);
+    };
+    const upd = (reload = true) => {
+      const b = parseBibs($("#bibsIn").value);
+      $("#whoList").innerHTML = b.map((n) => who(n) + (offCourse.has(n) && ROSTER.has(n) ? ' <span class="who-warn">⚠ 該時段不在跑道上，請再核對號碼</span>' : "")).join("<br>") || '<span class="muted">（沒有號碼布：不會被任何人查到）</span>';
+      $("#approve").disabled = !b.length || b.some((n) => !ROSTER.has(n));
+      document.querySelectorAll("#hints [data-add]").forEach((x) => x.classList.toggle("on", b.includes(Number(x.dataset.add))));
+      if (reload) { clearTimeout(hintTimer); hintTimer = setTimeout(loadHints, 350); }
+    };
+    $("#bibsIn").oninput = () => upd();
+    $("#hints").onclick = (e) => {
+      const x = e.target.closest("[data-add]"); if (!x) return;
+      const b = parseBibs($("#bibsIn").value), n = Number(x.dataset.add);
+      $("#bibsIn").value = (b.includes(n) ? b.filter((v) => v !== n) : [...b, n]).join(" ");
+      upd();
+    };
+    upd(false); loadHints();
+    // 儲存後自動開下一張待標相片（按拍攝時間）
+    const save2 = async (patch, next) => {
       $("#sheetMsg").textContent = "儲存中……";
+      const after = next ? pendingList().filter((x) => x.id !== id && byTimeAsc(x, p) > 0)[0] : null;
       const { error } = await sb.from("xc_photos").update(patch).eq("id", id);
       if (error) { $("#sheetMsg").textContent = "儲存失敗：" + error.message; return false; }
-      mergePhoto({ id, ...patch }); renderAll(); $("#sheet").close(); return true;
+      clearTimeout(hintTimer); hintSeq++;
+      mergePhoto({ id, ...patch }); renderAll(); $("#sheet").close();
+      if (after) openSheet(after.id);
+      return true;
     };
-    $("#approve").onclick = () => save2({ bibs: parseBibs($("#bibsIn").value), status: "approved", reviewed: true, reason: null });
-    $("#keep").onclick = () => save2({ bibs: parseBibs($("#bibsIn").value), status: "pending", reviewed: true });
-    $("#again").onclick = async () => {
+    const approve = () => {
+      const b = parseBibs($("#bibsIn").value);
+      if (!b.length || b.some((n) => !ROSTER.has(n))) return;
+      const off = b.filter((n) => offCourse.has(n));
+      if (off.length && !confirm(`${off.join("、")} 在拍攝時段不在跑道上，確定號碼沒有看錯？`)) return;
+      save2({ bibs: b, status: "approved", reviewed: true, reason: null }, true);
+    };
+    $("#approve").onclick = approve;
+    $("#bibsIn").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); approve(); } };
+    $("#keep").onclick = () => save2({ bibs: parseBibs($("#bibsIn").value), status: "pending", reviewed: true }, true);
+    if ($("#again")) $("#again").onclick = async () => {
       $("#sheetMsg").textContent = "重新辨識中……";
       const { error } = await sb.from("xc_photos").update({ reviewed: false, status: "uploaded" }).eq("id", id);
       if (error) { $("#sheetMsg").textContent = "失敗：" + error.message; return; }

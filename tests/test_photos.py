@@ -1,7 +1,7 @@
 """比賽相片：公眾頁 #/photos 及工作人員上載頁 photo-admin.html（Playwright，Supabase 及 Edge Function 全部以模擬攔截）
 用法：python -P -X utf8 -m pytest tests/test_photos.py
 """
-import io, itertools, json, re, time
+import io, itertools, json, pathlib, re, time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -154,7 +154,8 @@ def test_photos_page_after_expiry(pub):
 @pytest.fixture()
 def adm(browser, base_url):
     ctx = _ctx(browser, base_url)
-    db = {"photos": {}, "files": {}, "rev": itertools.count(1), "fn": [], "removed": [], "fn_mode": ["429", "ok"]}
+    db = {"photos": {}, "files": {}, "rev": itertools.count(1), "fn": [], "removed": [], "fn_mode": ["429", "ok"],
+          "ai": True, "hints": [], "near": []}   # ai：site.json 的 photo_ai（正式預設 false＝人手標）
     roster = [{"bib": 24, "cat": "FC", "heat": 1, "abbr": "CDSJ5", "name": "李蕙伃"},
               {"bib": 405, "cat": "MC", "heat": 1, "abbr": "IV", "name": "陳浩天"},
               {"bib": 7, "cat": "MC", "heat": 2, "abbr": "CAM", "name": "羅焯饒"}]
@@ -192,6 +193,12 @@ def adm(browser, base_url):
             db["files"][path] = _image_in(req.post_data_buffer)
             db.setdefault("upload_headers", []).append(req.headers)
             return ok(route, {"Key": f"xc-photos/{path}"})
+        if "/rpc/xc_photo_hints" in u:
+            q = json.loads(req.post_data or "{}"); db["hints"].append(q)
+            names = {r["bib"] for r in roster}
+            return ok(route, {"taken_ms": db["photos"].get(q["p_id"], {}).get("taken_ms"), "near": db["near"],
+                              "check": [{"bib": b, "in_roster": b in names, "on_course": b != 7} for b in q.get("p_bibs") or []],
+                              "cats": [{"cat": "MC", "heat": 1}, {"cat": "MC", "heat": 2}]})
         if "/functions/v1/xc-photo-bibs" in u:
             pid = json.loads(req.post_data)["id"]
             db["fn"].append(pid)
@@ -221,10 +228,18 @@ def adm(browser, base_url):
         return route.fulfill(status=404, body="", headers=CORS)
 
     ctx.route("https://*.supabase.co/**", handler)
+
+    site_json = json.loads((pathlib.Path(__file__).resolve().parents[1] / "docs/data/site.json").read_text(encoding="utf-8"))
+
+    def site(route):
+        body = {**site_json, "photo_ai": db["ai"]}
+        return route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+    ctx.route("**/data/site.json*", site)
     pg = ctx.new_page()
     pg.errors = []
     pg.on("pageerror", lambda e: pg.errors.append(str(e)))
-    pg.on("dialog", lambda d: d.accept())
+    pg.dialogs = []
+    pg.on("dialog", lambda d: (pg.dialogs.append(d.message), d.accept()))
     pg.base = base_url
     pg.db = db
     yield pg
@@ -242,6 +257,7 @@ def _until(page, cond, ms=15000):
 
 def _login(page):
     page.goto(f"{page.base}/photo-admin.html")
+    page.wait_for_load_state("networkidle")   # 等 site.json 載入、登入按鈕綁定
     page.fill("#email", "helper@example.invalid")
     page.fill("#pw", "x")
     page.click("#loginBtn")
@@ -414,6 +430,79 @@ def test_photo_admin_clock_formats_and_midnight(adm, tmp_path):
     page.click("#clockApply")
     expect(page.locator("#clockMsg")).to_contain_text("快 10 秒")
     expect(page.locator("#clockList li")).to_have_count(2)
+
+
+def test_photo_admin_manual_mode_upload(adm, tmp_path):
+    """人手模式（預設）：上載後不呼叫 AI，直接成為「未標號碼布」待覆核；不顯示 Gemini 訊息"""
+    page = adm
+    page.db["ai"] = False
+    _login(page)
+    f = tmp_path / "m.jpg"; f.write_bytes(_jpeg())
+    page.set_input_files("#files", [str(f)])
+    _until(page, lambda: len(page.db["photos"]) == 1)
+    expect(page.locator("#nQueue")).to_have_text("0")
+    row = next(iter(page.db["photos"].values()))
+    assert row["status"] == "pending" and row["reason"] == "未標號碼布" and page.db["fn"] == []
+    expect(page.locator("#nPending")).to_have_text("1")
+    expect(page.locator(".card[data-id] .meta b")).to_have_text("未標號碼布")
+    expect(page.locator(".card[data-id] .why")).to_have_count(0)
+    expect(page.locator("#queueMsg")).to_be_hidden()
+    page.click(".card[data-id]")
+    expect(page.locator("#again")).to_have_count(0)
+    expect(page.locator("#sheet")).not_to_contain_text("AI 讀出")
+
+
+def test_photo_admin_manual_tag_hints_and_next(adm, tmp_path):
+    """人手標：終點紀錄提示一按加入、在跑道上組別、不在跑道上警告；批准後自動跳到下一張（按拍攝時間）；Enter＝批准"""
+    page = adm
+    page.db["ai"] = False
+    page.db["near"] = [{"bib": 405, "dt": -1.2, "fin": True}, {"bib": 999, "dt": 2.0, "fin": True}, {"bib": 24, "dt": 6.4, "fin": False}]
+    _login(page)
+    a = tmp_path / "a.jpg"; a.write_bytes(_jpeg(when="2026:11:29 11:20:00"))
+    b = tmp_path / "b.jpg"; b.write_bytes(_jpeg(when="2026:11:29 11:20:07", color=(10, 200, 10)))
+    page.set_input_files("#files", [str(b), str(a)])
+    _until(page, lambda: len(page.db["photos"]) == 2)
+    first, second = sorted(page.db["photos"].values(), key=lambda r: r["taken_ms"])
+    expect(page.locator(".card[data-id]")).to_have_count(2)
+    assert page.locator(".card[data-id]").first.get_attribute("data-id") == first["id"]   # 按拍攝時間排列
+    page.locator(".card[data-id]").first.click()
+    chips = page.locator("#hints [data-add]")
+    expect(chips).to_have_count(2)                       # 999 不在名單，不提示
+    expect(chips.first).to_contain_text("405")
+    expect(chips.first).to_contain_text("陳浩天")
+    expect(chips.first).to_contain_text("相片前 1 秒衝線")
+    expect(chips.nth(1)).to_contain_text("中途經過")
+    expect(page.locator("#hints")).to_contain_text("男C C1、男C C2")
+    chips.first.click()
+    expect(page.locator("#bibsIn")).to_have_value("405")
+    expect(chips.first).to_have_class(re.compile(r"(^|\s)on(\s|$)"))
+    page.fill("#bibsIn", "405 7")
+    expect(page.locator("#whoList")).to_contain_text("該時段不在跑道上")
+    expect(page.locator("#whoList .who-warn")).to_have_count(1)
+    page.click("#approve")
+    _until(page, lambda: page.db["photos"][first["id"]]["status"] == "approved")
+    assert page.db["photos"][first["id"]]["bibs"] == [7, 405] and page.db["photos"][first["id"]]["reviewed"] is True
+    assert any("不在跑道上" in m for m in page.dialogs)
+    # 自動開下一張
+    expect(page.locator("#sheet")).to_be_visible()
+    expect(page.locator("#sheet .big")).to_have_attribute("src", re.compile(second["full_path"]))
+    page.fill("#bibsIn", "24")
+    page.press("#bibsIn", "Enter")
+    _until(page, lambda: page.db["photos"][second["id"]]["status"] == "approved")
+    assert page.db["photos"][second["id"]]["bibs"] == [24]
+    expect(page.locator("#sheet")).to_be_hidden()        # 已是最後一張
+    expect(page.locator("#nApproved")).to_have_text("2")
+    no_hscroll(page)
+
+
+def test_sql_photo_hints_admin_only():
+    """011_photo_hints.sql：只限管理員；不回傳姓名；終點提示排除已刪除及缺席；limit 在子查詢內"""
+    import pathlib
+    sql = (pathlib.Path(__file__).resolve().parents[1] / "supabase/011_photo_hints.sql").read_text(encoding="utf-8")
+    assert "if not (select public.xc_is_admin()) then raise exception" in sql
+    assert "revoke all on function public.xc_photo_hints(uuid, int[]) from public, anon" in sql
+    assert "'name'" not in sql and "not e.deleted and not coalesce(e.dns, false)" in sql
+    assert re.search(r"limit 10\s*\)\s*n;", sql)
 
 
 def test_sql_lookup_requires_name_and_hides_bibs():

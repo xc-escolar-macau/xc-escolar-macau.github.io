@@ -50,3 +50,15 @@ dialog p { margin: 0; font-size: 13px; }
 .clock-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
 .clock-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .clock-list li span { min-width: 0; overflow-wrap: anywhere; }
+
+/* 人手標號碼布提示（終點紀錄、在跑道上的組別） */
+.hints { display: grid; gap: 6px; }
+.hints:empty { display: none; }
+.hint-h { color: var(--text-2); }
+.near { display: flex; flex-wrap: wrap; gap: 6px; }
+.near .chip { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; min-height: 44px; padding: 6px 10px; border-radius: 12px; background: var(--surface-2); color: var(--text); font-size: 14px; text-align: left; max-width: 100%; }
+.near .chip small { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+.near .chip.on { background: var(--accent); color: var(--accent-ink); }
+.near .chip.on small { color: var(--accent-ink); opacity: .75; }
+.hint-cats { font-size: 12px; }
+.who-warn { color: var(--warn); font-size: 13px; }
