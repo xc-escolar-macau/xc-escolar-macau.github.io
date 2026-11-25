@@ -95,6 +95,8 @@ python -m http.server 8765 --directory docs
 - 計分：`docs/live-core.js`（章程 5.6–5.12；以第 44–47 屆官方團體冠軍驗證 36/36 一致，`tests/test_live_core.py` 以 node 自動核對）
 - 號碼布名單（第 48 屆已匯入 690 人）：號碼由秩序冊第 7–34 頁抄錄至 `private/bibs48.txt`（按學校編配 1–690，女子先、男子後；已核對號碼唯一、各校連續、與逐格 OCR 比對），合併為 `private/startlist48_bib.csv` → `python -P -X utf8 scripts/live_roster.py private/startlist48_bib.csv private/preview48_review.csv private/live_roster48.sql 48` → 在 Supabase 執行輸出的 SQL
 - 分組出發：男C 分 C1–C3、女C 分 C1–C2（中學組）；各組時間合併定名次，個人另顯示分組名次；每完成一組更新，全部分組完成前團體分標「暫計」
+- 點名／缺席：計時頁「點名」按鈕（有缺席時顯示「缺席 N」）。預設「點名（按有到）」：按有到的號碼，點完按「點名完成」，未點名者一次過標記缺席（可「取消點名完成」；點名進度存於本裝置，重新整理不遺失；已有經過紀錄者自動當有到）。另可切換「按缺席」直接按沒有到的號碼。名單可按「秩序冊次序」（一行一人，須執行 `010_roster_seq.sql` 並寫入次序）或「按學校」排列。按缺席模式下：本組名單按號碼標記沒有起跑者（再按取消，可撤銷；已有經過紀錄者不能標記；其後記錄該號碼經過會詢問並取消缺席）。資料存於 `xc_live_entries` 的 `dns` 欄（`supabase/009_live_dns.sql`，**須先執行才可使用**；未執行時缺席標記會被拒並提示，不影響其他紀錄上傳）
+- 不能計分的隊員（`live-core.js` 的 `notScoring`）：標記缺席；或該分組已過達標時間／已完成而沒有任何經過紀錄。學校扣除後不足計分人數即顯示「N 人缺席或未能完成，人數不足，不計分」、不再計算奪冠形勢；出戰名單顯示「缺席」或「已過達標時間，未有紀錄」
 - 新增工作人員：在 Supabase Authentication 建立帳戶（勾選 Auto Confirm），再執行 `insert into public.xc_live_admins(email) values ('電郵小寫');`
 
 ## 運動員榮譽卡

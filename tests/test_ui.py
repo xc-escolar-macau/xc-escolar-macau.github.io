@@ -684,10 +684,10 @@ def live(browser, base_url):
     ctx.route("https://fonts.gstatic.com/**", lambda r: r.fulfill(status=204, body=""))
     db = {"entries": {}, "heats": {}, "cert": {}, "rev": itertools.count(1)}
     ma = EDS[47]["categories"]["MA"]["individual"]
-    roster = [{"bib": 1001, "cat": "MA", "heat": None, "abbr": "YW", "pid": ma[0]["pid"], "name": None},
-              {"bib": 1002, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": "測試甲"},
-              {"bib": 1012, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": "測試乙"},
-              {"bib": 1003, "cat": "MA", "heat": None, "abbr": "YW", "pid": PRED_MA_TOP, "name": None},
+    roster = [{"bib": 1001, "cat": "MA", "heat": None, "abbr": "YW", "pid": ma[0]["pid"], "name": None, "seq": 3},
+              {"bib": 1002, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": "測試甲", "seq": 4},
+              {"bib": 1012, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": "測試乙", "seq": 1},
+              {"bib": 1003, "cat": "MA", "heat": None, "abbr": "YW", "pid": PRED_MA_TOP, "name": None, "seq": 2},
               {"bib": 2001, "cat": "FB", "heat": None, "abbr": "HK", "pid": None, "name": None},
               # 男C 分組（第 48 屆實際號碼：C1 陳浩天 405；C2 羅焯饒 7）
               {"bib": 405, "cat": "MC", "heat": 1, "abbr": "IV", "pid": None, "name": "陳浩天"},
@@ -795,7 +795,7 @@ def _login_ma(page):
 
 
 def _passes(page, bib):
-    return sorted((r for r in page.db["entries"].values() if r.get("bib") == bib and not r.get("deleted")), key=lambda r: r["at_ms"])
+    return sorted((r for r in page.db["entries"].values() if r.get("bib") == bib and not r.get("deleted") and not r.get("dns")), key=lambda r: r["at_ms"])
 
 
 def test_live_admin_cert_release(live):
@@ -1383,3 +1383,117 @@ def test_honours_card_export(page, kind):
     assert info["qrCorner"][:3] == [255, 255, 255], "榮譽卡沒有 QR 碼"
     page.click("#cmClose")
     expect(page.locator(".card-modal")).to_have_count(0)
+
+
+def _dns_rows(page, bib):
+    return [r for r in page.db["entries"].values() if r.get("bib") == bib and r.get("dns")]
+
+
+def test_live_admin_absent_marking_and_public_team(live):
+    """缺席標記：計時頁按號碼標記／取消；公眾頁團體榜扣除缺席者後不足人數即「不計分」，出戰名單顯示缺席；其後記錄經過會取消缺席"""
+    page = live
+    _login_ma(page)
+    page.click("#startBtn")
+    page.click("#dnsBtn")
+    expect(page.locator("#sheet")).to_be_visible()
+    page.click('#sheet [data-m="absent"]')               # 按缺席（記住選擇）
+    page.fill("#dnsFind", "10")
+    page.click('#sheet [data-db="1012"]')
+    page.click('#sheet [data-db="1002"]')
+    page.click('#sheet [data-db="1002"]')          # 再按一下取消
+    expect(page.locator("#dnsN")).to_have_text("1")
+    _until(page, lambda: any(not r["deleted"] for r in _dns_rows(page, 1012)) and all(r["deleted"] for r in _dns_rows(page, 1002)))
+    page.click('#sheet button[value="close"]')
+    expect(page.locator("#dnsBtn")).to_have_text("缺席 1")
+    page.click('#listTabs [data-tab="grid"]')
+    expect(page.locator('#list.grid li.dns [data-gb="1012"]')).to_contain_text("缺席")
+    page.click('#listTabs [data-tab="all"]')
+    expect(page.locator("#list.records")).to_contain_text("缺席")
+    # 濠江中學男A 報 6 人：再標記 1002 缺席 → 只餘 4 人，不足 5 人計分
+    page.click("#dnsBtn")
+    page.click('#sheet [data-db="1002"]')
+    page.click('#sheet button[value="close"]')
+    _until(page, lambda: any(not r["deleted"] for r in _dns_rows(page, 1002)))
+
+    page.goto(f"{page.base}/#/live?ev=test&c=MA")
+    page.wait_for_selector("#lvBody")
+    page.click('[data-lv="team"]')
+    hk = page.locator(".lv-tw", has_text="濠江中學")
+    expect(hk.locator(".lv-team")).to_contain_text("2 人缺席或未能完成，人數不足，不計分")
+    expect(hk.locator(".lv-sc b")).to_have_text("-")
+    hk.locator(".lv-team").click()
+    expect(hk.locator(".lv-roster li", has_text="測試甲")).to_contain_text("缺席")
+    expect(page.locator("#lvBody .lv-run")).to_have_count(0)
+    no_hscroll(page)
+
+    # 回到計時頁：記錄已標記缺席的 1012 → 確認後取消缺席標記並記第 1 圈
+    page.goto(f"{page.base}/live-admin.html")
+    expect(page.locator("#app")).to_be_visible()
+    page.select_option("#grp", "MA|1")
+    _type_bib(page, 1012)
+    _until(page, lambda: len(_passes(page, 1012)) == 1 and all(r["deleted"] for r in _dns_rows(page, 1012)))
+    expect(page.locator("#dnsBtn")).to_have_text("缺席 1")
+
+
+def test_live_admin_absent_programme_order(live):
+    """缺席名單預設按秩序冊次序（一行一人，可與印刷本逐行對照）；可切換按學校，並記住選擇"""
+    page = live
+    _login_ma(page)
+    _synced(page)                                          # 等號碼布名單載入
+    page.click("#dnsBtn")
+    page.wait_for_selector("#sheet .dns-rows [data-db]")
+    order = page.eval_on_selector_all("#sheet .dns-rows [data-db]", "els => els.map(e => e.dataset.db)")
+    assert order == ["1012", "1003", "1001", "1002"]
+    expect(page.locator("#sheet .dns-rows button").first).to_contain_text("測試乙")
+    expect(page.locator('#sheet .dns-order [data-o="prog"]')).to_have_attribute("aria-checked", "true")
+    page.click('#sheet [data-m="absent"]')
+    page.click('#sheet .dns-order [data-o="school"]')
+    expect(page.locator("#sheet .dns-rows")).to_have_count(0)
+    expect(page.locator("#sheet .dns-sch").first).to_be_visible()
+    page.click('#sheet [data-db="1003"]')
+    _until(page, lambda: any(not r["deleted"] for r in _dns_rows(page, 1003)))
+    page.click('#sheet button[value="close"]')
+    page.click("#dnsBtn")                                  # 記住上次選擇
+    expect(page.locator('#sheet .dns-order [data-o="school"]')).to_have_attribute("aria-checked", "true")
+    page.click('#sheet .dns-order [data-o="prog"]')
+    expect(page.locator('#sheet .dns-rows [data-db="1003"]')).to_have_class("on")
+    expect(page.locator('#sheet .dns-rows [data-db="1003"]')).to_contain_text("缺席")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+
+
+def test_live_admin_roll_call(live):
+    """點名（預設）：按有到的號碼 → 點名完成，未點名者一次過標記缺席；可取消點名完成；點名進度重新整理後保留"""
+    page = live
+    _login_ma(page)
+    _synced(page)
+    expect(page.locator("#dnsBtn")).to_have_text("點名")
+    page.click("#dnsBtn")
+    expect(page.locator('#sheet [data-m="present"]')).to_have_attribute("aria-checked", "true")
+    page.click('#sheet [data-db="1012"]')
+    page.click('#sheet [data-db="1003"]')
+    page.click('#sheet [data-db="1001"]')
+    page.click('#sheet [data-db="1001"]')                  # 再按取消
+    expect(page.locator('#sheet [data-db="1012"]')).to_contain_text("有到")
+    expect(page.locator("#dnsHere")).to_have_text("2")
+    assert not any(r.get("dns") for r in page.db["entries"].values())   # 點名本身不寫入資料庫
+    page.click("#rcDone")                                   # 確認框自動按「確定」
+    _until(page, lambda: sorted(r["bib"] for r in page.db["entries"].values() if r.get("dns") and not r["deleted"]) == [1001, 1002])
+    expect(page.locator("#dnsN")).to_have_text("2")
+    expect(page.locator("#rcUndo")).to_be_visible()
+    # 有到的人其後改為缺席 → 按一下即取消缺席並當有到
+    page.click('#sheet [data-db="1002"]')
+    _until(page, lambda: all(r["deleted"] for r in _dns_rows(page, 1002)))
+    expect(page.locator('#sheet [data-db="1002"]')).to_contain_text("有到")
+    page.click('#sheet button[value="close"]')
+    expect(page.locator("#dnsBtn")).to_have_text("缺席 1")
+    # 重新整理：點名進度保留
+    page.reload()
+    expect(page.locator("#app")).to_be_visible()
+    _synced(page)
+    page.click("#dnsBtn")
+    expect(page.locator('#sheet [data-db="1012"]')).to_contain_text("有到")
+    expect(page.locator('#sheet [data-db="1001"]')).to_contain_text("缺席")
+    page.click("#rcUndo")
+    _until(page, lambda: not any(r.get("dns") and not r["deleted"] for r in page.db["entries"].values()))
+    expect(page.locator("#rcDone")).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")

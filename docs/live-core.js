@@ -15,7 +15,11 @@
    - 途中名次：已完賽者在前（按衝線次序或時間），其後按完成圈數多者先、同圈數按最近一次經過較早者先
    - 全組完成後，未完成者不設名次（達標時間到即終止比賽）；分組出發時，該分組完成即適用
    - 分組出發（例如男C 分 C1、C2、C3）：各組時間合併定名次（章程 5.6），另計分組內名次 heatPlace；
-     未完成全部分組前，團體分只屬暫計 */
+     未完成全部分組前，團體分只屬暫計
+   - 缺席（dns）：工作人員標記某號碼缺席，此行不是一次經過，不計圈數、不計名次；
+     如該號碼其後有經過紀錄，以經過紀錄為準（缺席標記作廢，dnsVoid）
+   - 不能計分的隊員（notScoring）：標記缺席；或該分組已過達標時間／已完成而沒有任何經過紀錄。
+     團體計分人數＝報名人數－不能計分人數，不足計分人數的學校即時列為「人數不足，不計分」，奪冠形勢亦不再計算 */
 (function (root) {
   "use strict";
   const TEAM_N = { A: 5, B: 5, C: 4, D: 4, E: 4 };
@@ -35,9 +39,10 @@
     const gap = ((opt && opt.minGap) ?? 0) * 1000;
     const multi = !!(opt && opt.multiHeat), done = !!(opt && opt.done);
     const elapsed = (e) => { const h = heats[e.heat]; return h && h.start_ms != null ? e.at_ms - h.start_ms : null; };
-    const groups = new Map(), slots = [], ignored = new Map(), runners = [];
+    const groups = new Map(), slots = [], ignored = new Map(), runners = [], dnsMark = new Map();
     for (const e of entries) {
       if (e.deleted) continue;
+      if (e.dns) { const k = keyOf(e); if (k) dnsMark.set(k, e); continue; }
       if (isSlot(e)) { slots.push(e); continue; }
       const k = keyOf(e) || `x${e.id}`;
       if (!groups.has(k)) groups.set(k, []);
@@ -61,8 +66,12 @@
         key, anon, heat: last.heat, abbr: info.abbr, pid: info.pid || null, name: info.name || null, bib: last.bib ?? null,
         passes, laps: passes.length, total: laps, fin: !!fin, finEntry: fin, last,
         splits: passes.map((p, i) => (i === 0 ? p.t : p.at_ms - passes[i - 1].at_ms)),
+        dnsVoid: dnsMark.has(key),
       });
     }
+    // 缺席：有標記而沒有任何經過紀錄者
+    const absent = new Map();
+    for (const [key, e] of dnsMark) if (!groups.has(key)) absent.set(key, { key, bib: e.bib ?? null, abbr: e.abbr, pid: e.pid || null, name: e.name || null, heat: e.heat, entry: e });
     const ord = (p) => (multi ? (p.t ?? Infinity) : p.seq);
     runners.sort((a, b) => (b.fin - a.fin)
       || (a.fin ? ord(a.finEntry) - ord(b.finEntry) : b.laps - a.laps || ord(a.last) - ord(b.last))
@@ -76,7 +85,25 @@
       r.heatPlace = r.dnf ? null : (heatPos[r.heat] = (heatPos[r.heat] || 0) + 1);
       r.t = r.fin ? r.finEntry.t : r.last.t;
     }
-    return { runners, ignored, slots };
+    return { runners, ignored, slots, absent };
+  }
+
+  /* 不能計分的隊員：members＝本組名單 [{key, abbr, heat}]；absent＝buildRunners 的 absent；nowMs＝現在時間（已校正）
+     回傳 count：{學校: 人數}、why：Map(key → "dns" 缺席｜"cutoff" 已過達標時間仍無紀錄｜"nofin" 分組已完成而無紀錄) */
+  function notScoring(cat, ranked, absent, members, heats, nowMs) {
+    const seen = new Set(ranked.map((r) => r.key));
+    const why = new Map(), count = {};
+    const add = (key, abbr, w) => { if (why.has(key)) return; why.set(key, w); if (abbr && abbr !== "?") count[abbr] = (count[abbr] || 0) + 1; };
+    for (const a of (absent ? absent.values() : [])) add(a.key, a.abbr, "dns");
+    const cut = (CUTOFF[cat] || Infinity) * 1000;
+    for (const m of members || []) {
+      if (!m || !m.key || seen.has(m.key) || why.has(m.key)) continue;
+      const h = heats[m.heat || 1];
+      if (!h) continue;
+      if (h.status === "done") add(m.key, m.abbr, "nofin");
+      else if (h.start_ms != null && nowMs != null && nowMs - h.start_ms > cut) add(m.key, m.abbr, "cutoff");
+    }
+    return { count, why };
   }
 
   /* 預計下次經過時間：上次經過＋上一圈用時（第一圈以起跑至首次經過的時間估算） */
@@ -95,7 +122,7 @@
   /* entered：{abbr: 報名人數}；ranked：buildRunners 的 runners；done：全組（所有分組）已完成
      pending：分組出發而未完成全部分組（之後的分組可能有更快的隊員，分數未定）
      途中按目前跑位推算：每校取名次最前的 n 人（不論是否已完賽）相加，未齊人者假設餘下隊員緊接目前最後一名之後 */
-  function teamStandings(cat, ranked, entered, done, pending) {
+  function teamStandings(cat, ranked, entered, done, pending, gone) {
     const n = TEAM_N[cat[1]];
     const teams = Object.entries(entered).filter(([, k]) => k >= n).map(([abbr, k]) => ({ abbr, entered: k, places: [], fins: 0 }));
     const byAbbr = new Map(teams.map((x) => [x.abbr, x]));
@@ -112,7 +139,9 @@
       for (let i = 1; i <= x.missing; i++) proj += K + i;
       x.projected = proj;
       x.first = x.places[0] ?? Infinity;
-      x.out = done && !x.complete;        // 全組完成仍不足人數：不計團體分
+      x.gone = (gone && gone[x.abbr]) || 0;
+      x.short = !x.complete && x.entered - x.gone < n;   // 缺席或未能完成後已不足計分人數
+      x.out = (done && !x.complete) || x.short;          // 全組完成仍不足人數，或已肯定不足人數：不計團體分
     }
     teams.sort((a, b) => a.out - b.out || a.projected - b.projected || a.first - b.first || b.complete - a.complete || a.abbr.localeCompare(b.abbr));
     let pos = 0;
@@ -125,7 +154,7 @@
      state：locked（已鎖定團體冠軍）、out（已無法奪得團體冠軍）、open（仍有機會）
      need：未齊人的學校要超越目前最佳的已齊人學校，餘下 r 名計分隊員名次總和的上限 max
      分組出發而未完成全部分組（pending）：其後分組的時間可插入前列，名次未定，故只計 need，不判斷鎖定／出局 */
-  function titleRace(cat, ranked, entered, pending) {
+  function titleRace(cat, ranked, entered, pending, gone) {
     const n = TEAM_N[cat[1]];
     const fins = ranked.filter((e) => e.fin !== false && e.place != null);
     const F = fins.length;
@@ -133,7 +162,7 @@
     for (const [abbr, k] of Object.entries(entered)) {
       if (k < n) continue;
       const fp = fins.filter((e) => e.abbr === abbr).map((e) => e.place).sort((a, b) => a - b);
-      const dnf = ranked.filter((e) => e.abbr === abbr && e.dnf).length;
+      const dnf = ranked.filter((e) => e.abbr === abbr && e.dnf).length + ((gone && gone[abbr]) || 0);
       const f = Math.min(fp.length, n), complete = fp.length >= n;
       const sumF = fp.slice(0, n).reduce((s, p) => s + p, 0);
       let best = sumF;
@@ -145,7 +174,7 @@
     const res = {};
     for (const x of T) {
       let state = "open", need = null;
-      if (x.cannot && !pending) state = "out";
+      if (x.cannot) state = "out";   // 人數已肯定不足（缺席、未完成）：不論分組是否完成
       else if (top && x !== top && !pending && !beats({ s: x.best, first: x.first }, { s: top.best, first: top.first })) state = "out";
       if (state === "open" && top && x !== top && !x.complete) {
         const tieWin = x.f > 0 && x.first < top.first; // 同分時首名名次較前者勝
@@ -238,5 +267,5 @@
     return out;
   }
 
-  root.XCLive = { TEAM_N, CUTOFF, MIN_GAP, keyOf, isSlot, lapsOf, buildRunners, eta, rankEntries, teamStandings, titleRace, simSplits, spokenGroups, segmentBibs, voiceSegments };
+  root.XCLive = { TEAM_N, CUTOFF, MIN_GAP, keyOf, isSlot, lapsOf, buildRunners, notScoring, eta, rankEntries, teamStandings, titleRace, simSplits, spokenGroups, segmentBibs, voiceSegments };
 })(typeof window !== "undefined" ? window : globalThis);

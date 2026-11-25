@@ -105,3 +105,21 @@ def test_segment_run_on_numbers(R):
 def test_voice_separators(R):
     assert R["sep"] == [{"done": ["四零五"], "rest": "三五三"}, {"done": ["四零五", "三五三"], "rest": "六十"},
                         {"done": [], "rest": "四零五"}, {"done": ["四零五"], "rest": ""}]
+
+
+def test_dns_not_ranked_and_team_short(R):
+    d = R["dns"]
+    assert d["runners"] == 5 and d["absent"] == ["b5003", "b6004"]     # 已撤銷的缺席標記不計
+    assert d["places"] == [1, 2, 3, 4, 5]
+    assert d["gone"] == {"甲": 1, "乙": 1}
+    assert d["why"] == {"b5003": "dns", "b6004": "dns"}
+    # 甲報 4 人缺 1 人 → 人數不足，不計分（排最後）；乙報 5 人缺 1 人仍有 4 人
+    assert d["teams"] == [["乙", 1, False, False, 1], ["甲", None, True, True, 1]]
+    assert d["title"]["甲"] == "out"
+
+
+def test_dns_cutoff_and_void(R):
+    assert R["dnsLate"] == {"b5003": "dns", "b6004": "dns", "b5004": "cutoff", "b6005": "cutoff"}
+    v = R["dnsVoid"]
+    assert v["absent"] == ["b6004"] and v["voided"] == ["b5003"]   # 標記缺席後有經過紀錄：以紀錄為準
+    assert R["dnsPending"] == "out"

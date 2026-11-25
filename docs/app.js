@@ -112,6 +112,7 @@
       lvTeamHint: "按學校可查看出戰名單及奪冠條件。奪冠條件以已到達終點者的名次計算。",
       lvRoster: "出戰名單", lvEntered: (n) => `報名 ${n} 人`, lvRosterErr: "暫時未能載入出戰名單。", lvSchoolPage: "學校資料",
       lvMemFin: (p, tm) => `第 ${p} 名 · ${tm}`, lvMemLap: (n, l, p) => `已完成 ${n}／${l} 圈 · 暫列第 ${p} 名`, lvMemNotStarted: "未起跑", lvMemNoPass: "未有經過終點紀錄", lvMemNoFin: "未有完賽紀錄", lvScorer: "計分",
+      lvMemDns: "缺席", lvMemCutoff: "已過達標時間，未有紀錄", lvShort: (g) => `${g} 人缺席或未能完成，人數不足，不計分`,
       lvHeatGroup: (h, s) => `第 ${h} 組（${s}）`,
       lvUpdated: (s) => `更新於 ${s}`, lvOffline: "暫時未能連線，稍後自動重試。", lvTimeNote: "人手計時，只供參考",
       ctBtn: "完賽紀念卡", ctTitle: (n) => `第${n}屆完賽紀念卡`,
@@ -238,6 +239,7 @@
       lvTeamHint: "Tap a school for its runners and what it needs to win. Requirements use places of runners already finished.",
       lvRoster: "Runners", lvEntered: (n) => `${n} entered`, lvRosterErr: "Runner list unavailable for now.", lvSchoolPage: "School page",
       lvMemFin: (p, tm) => `#${p} · ${tm}`, lvMemLap: (n, l, p) => `${n}/${l} laps · provisionally #${p}`, lvMemNotStarted: "Not started", lvMemNoPass: "Not yet recorded", lvMemNoFin: "No finish recorded", lvScorer: "Scores",
+      lvMemDns: "Absent", lvMemCutoff: "Past the time limit, no record", lvShort: (g) => `${g} absent or unable to finish: too few to score`,
       lvHeatGroup: (h, s) => `Heat ${h} (${s})`,
       lvUpdated: (s) => `Updated ${s}`, lvOffline: "Connection lost, retrying.", lvTimeNote: "Hand timing, for reference only",
       ctBtn: "Finisher card", ctTitle: (n) => `Edition ${n} finisher card`,
@@ -1543,10 +1545,14 @@
     const heats = {}; for (const h of st.hs) heats[h.heat] = h;
     const entries = [...LIVE.entries.values()].filter((e) => e.cat === cat);
     const laps = XCLive.lapsOf(DB.race, cat);
-    const ranked = XCLive.buildRunners(entries, heats, { laps, minGap: XCLive.MIN_GAP[cat] / (LIVE.demo ? LIVE.demoSpeed : 1), multiHeat: multi, done: st.status === "done" }).runners;
+    const built = XCLive.buildRunners(entries, heats, { laps, minGap: XCLive.MIN_GAP[cat] / (LIVE.demo ? LIVE.demoSpeed : 1), multiHeat: multi, done: st.status === "done" });
+    const ranked = built.runners;
     const entered = liveEntered(cat), pending = multi && st.status !== "done";
-    const S = XCLive.teamStandings(cat, ranked, entered, st.status === "done", pending);
-    const TR = XCLive.titleRace(cat, ranked, entered, pending);
+    // 不能計分的隊員：缺席標記；或已過達標時間／分組已完成而沒有任何經過紀錄（按出戰名單）
+    const members = (LIVE.roster || []).filter((r) => r.cat === cat).map((r) => ({ key: r.k, abbr: r.abbr, heat: r.heat }));
+    const gone = XCLive.notScoring(cat, ranked, built.absent, members, heats, liveNow());
+    const S = XCLive.teamStandings(cat, ranked, entered, st.status === "done", pending, gone.count);
+    const TR = XCLive.titleRace(cat, ranked, entered, pending, gone.count);
     const heatsDone = st.hs.filter((h) => h.status === "done").length;
     const time = (ms) => ms == null ? "" : fmtClock(ms);
     const roster = (LIVE.roster || []).filter((r) => r.cat === cat);
@@ -1591,7 +1597,7 @@
       teamHtml = S.teams.map((x) => {
         const zh = schoolOfAbbr(x.abbr), tr = TR[x.abbr] || {};
         const chips = x.places.map((p, i) => `<span class="lv-pl ${i < S.n ? "sc" : "ex"}">${p}</span>`).join("") + Array.from({ length: x.missing }, () => `<span class="lv-pl gap">·</span>`).join("");
-        const status = x.out ? t("lvOut") : x.complete ? t("lvComplete") : x.missing ? t("lvMissing", x.missing) : "";
+        const status = x.short ? t("lvShort", x.gone) : x.out ? t("lvOut") : x.complete ? t("lvComplete") : x.missing ? t("lvMissing", x.missing) : "";
         // 奪冠形勢
         let why = "", whyCls = "";
         if (st.status === "done") { if (x.pos === 1 && x.complete) { why = t("lvChampion"); whyCls = "ok"; } }
@@ -1618,6 +1624,8 @@
             let stt, cls = "";
             if (e && e.fin && e.place != null) { stt = t("lvMemFin", e.place, time(e.t)) + (multi && e.heatPlace ? ` · ${t("lvHeatPlace", cat[1] + e.heat, e.heatPlace)}` : ""); cls = scorers.has(e.place) && x.scorers.indexOf(e.place) < S.n ? "sc" : "fin"; }
             else if (e && e.dnf) { stt = t("lvDnf"); cls = "dnf"; }
+            else if (!e && gone.why.get(r.k) === "dns") { stt = t("lvMemDns"); cls = "dnf"; }
+            else if (!e && gone.why.get(r.k) === "cutoff") { stt = t("lvMemCutoff"); cls = "dnf"; }
             else if (e) { stt = t("lvMemLap", e.laps, laps, e.place); cls = "run"; }
             else { stt = h.status === "ready" ? t("lvMemNotStarted") : h.status === "running" ? t("lvMemNoPass") : t("lvMemNoFin"); cls = "wait"; }
             return `<li class="${cls}"><span class="mn">${nm}</span><span class="ms">${cls === "sc" ? `<b class="lv-sc-tag">${t("lvScorer")}</b>` : ""}${esc(stt)}</span></li>`;
@@ -1639,7 +1647,7 @@
           <button class="lv-team" data-tk="${esc(x.abbr)}" aria-expanded="${isOpen}">
             <span class="rank-wrap"><span class="rank ${x.pos && x.pos <= 3 && x.complete ? "r" + x.pos : ""}">${x.pos ?? "-"}</span>${moveBadge(viewId, x.abbr)}</span>${crest(zh, "sm")}
             <span class="lv-tm"><b>${esc(school(zh))}</b><span class="lv-pls">${chips}</span>${heatMix ? `<span class="lv-mix">${esc(heatMix)}</span>` : ""}${why ? `<span class="lv-why ${whyCls}">${why}</span>` : ""}</span>
-            <span class="lv-sc"><b>${x.out ? "-" : x.complete ? x.score : x.projected}</b><small class="${x.complete ? "ok" : ""}">${x.complete ? status : [t("lvProv"), status].filter(Boolean).join(" · ")}</small><i class="lv-caret" aria-hidden="true"></i></span>
+            <span class="lv-sc"><b>${x.out ? "-" : x.complete ? x.score : x.projected}</b><small class="${x.complete ? "ok" : ""}">${x.complete || x.out ? status : [t("lvProv"), status].filter(Boolean).join(" · ")}</small><i class="lv-caret" aria-hidden="true"></i></span>
           </button>${body}</div>`;
       }).join("");
     }

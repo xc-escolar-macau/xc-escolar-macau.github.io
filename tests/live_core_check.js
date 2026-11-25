@@ -134,4 +134,34 @@ const B = (entries, opt) => L.buildRunners(entries, H, { laps: 5, minGap: 119, .
 }
 // 2l. 語音分隔：「號」「、」「，」後即當講完
 out.sep = ["四零五號三五三", "四零五、三五三，六十", "四零五", "四零五號"].map((x) => L.voiceSegments(x));
+// 2m. 缺席標記：不計名次；學校人數不足即列為不計分；奪冠形勢不再計算
+{
+  const S = 1000, H = { 1: { start_ms: 0, status: "running" } };
+  // 男C（每隊 4 人）：甲報 4 人、乙報 5 人；甲 5003 缺席、乙 6004 缺席
+  const ev = [
+    ["a1", 5001, "甲", 300], ["b1", 6001, "乙", 310], ["a2", 5002, "甲", 320], ["b2", 6002, "乙", 330], ["b3", 6003, "乙", 340],
+  ].map(([id, bib, abbr, sec], i) => ({ id, bib, heat: 1, abbr, at_ms: sec * S, seq: i + 1, deleted: false }));
+  ev.push({ id: "d1", bib: 5003, heat: 1, abbr: "甲", at_ms: 0, seq: 9, deleted: false, dns: true });
+  ev.push({ id: "d2", bib: 6004, heat: 1, abbr: "乙", at_ms: 0, seq: 10, deleted: false, dns: true });
+  ev.push({ id: "d3", bib: 6005, heat: 1, abbr: "乙", at_ms: 0, seq: 11, deleted: true, dns: true });   // 已撤銷
+  const x = L.buildRunners(ev, H, { laps: 2 });
+  const members = [5001, 5002, 5003, 5004].map((b) => ({ key: `b${b}`, abbr: "甲", heat: 1 })).concat([6001, 6002, 6003, 6004, 6005].map((b) => ({ key: `b${b}`, abbr: "乙", heat: 1 })));
+  const g = L.notScoring("MC", x.runners, x.absent, members, H, 400 * S);
+  const T = L.teamStandings("MC", x.runners, { 甲: 4, 乙: 5 }, false, false, g.count);
+  const TR = L.titleRace("MC", x.runners, { 甲: 4, 乙: 5 }, false, g.count);
+  out.dns = {
+    runners: x.runners.length, absent: [...x.absent.keys()].sort(), places: x.runners.map((r) => r.place),
+    gone: g.count, why: Object.fromEntries(g.why),
+    teams: T.teams.map((t) => [t.abbr, t.pos, t.out, t.short, t.gone]),
+    title: { 甲: TR["甲"].state, 乙: TR["乙"].state },
+  };
+  // 過了達標時間（男C 720 秒）仍無紀錄 → 不能計分；之後有經過紀錄則以紀錄為準
+  const late = L.notScoring("MC", x.runners, x.absent, members, H, 800 * S);
+  out.dnsLate = Object.fromEntries(late.why);
+  const ev2 = ev.concat([{ id: "p9", bib: 5003, heat: 1, abbr: "甲", at_ms: 350 * S, seq: 12, deleted: false }]);
+  const y = L.buildRunners(ev2, H, { laps: 2 });
+  out.dnsVoid = { absent: [...y.absent.keys()].sort(), voided: y.runners.filter((r) => r.dnsVoid).map((r) => r.key) };
+  // 分組未完成（pending）：缺席令人數不足者亦即時列為無法奪冠
+  out.dnsPending = L.titleRace("MC", x.runners, { 甲: 4, 乙: 5 }, true, g.count)["甲"].state;
+}
 process.stdout.write(JSON.stringify(out));

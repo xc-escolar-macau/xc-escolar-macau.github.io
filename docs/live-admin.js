@@ -5,7 +5,8 @@
    - 第一圈輸入號碼後，運動員會出現在「跑道上」清單，之後按一下該行即記一圈（清單按預計到達排序，可鎖定）
    - 每次輸入即時寫入本機佇列，再上傳；網絡中斷時保留，恢復後自動補傳（以 id 防重複）；多部裝置共用同一份紀錄
    - 時間以按鍵當刻計（已按伺服器時差校正），不受上傳延誤影響
-   - 練習模式（live-admin.html?practice=1）：不需登入、不連資料庫，以第 47 屆成績模擬多圈比賽 */
+   - 練習模式（live-admin.html?practice=1）：不需登入、不連資料庫，以第 47 屆成績模擬多圈比賽
+   - 缺席：按「缺席」在本組名單標記沒有起跑的號碼（可再按取消；可撤銷）；公眾頁據此把缺席者剔出團體計分人數 */
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
@@ -84,10 +85,17 @@
     if (best) offset = best.off;
   }
 
+  // 號碼布名單：seq＝秩序冊內的次序（010_roster_seq.sql）；資料庫未有該欄（或未執行 005）時逐步減少欄位
+  async function rosterRows(event, more = (q) => q) {
+    for (const cols of ["bib,cat,heat,abbr,pid,name,seq", "bib,cat,heat,abbr,pid,name", "bib,cat,heat,abbr,pid"]) {
+      const r = await more(sb.from("xc_live_roster").select(cols).eq("event", event)).limit(5000);
+      if (!r.error) return r;
+    }
+    return { data: null, error: true };
+  }
   async function loadRoster() {
     ROSTER.clear();
-    let { data, error } = await sb.from("xc_live_roster").select("bib,cat,heat,abbr,pid,name").eq("event", st.event).limit(5000);
-    if (error) ({ data, error } = await sb.from("xc_live_roster").select("bib,cat,heat,abbr,pid").eq("event", st.event).limit(5000)); // 未執行 005 時
+    const { data, error } = await rosterRows(st.event);
     if (!error) for (const r of data) ROSTER.set(String(r.bib), r);
     setSync();
   }
@@ -121,6 +129,10 @@
         const q = queue[0];
         const table = q.t === "entry" ? "xc_live_entries" : "xc_live_heats";
         const { error } = await sb.from(table).upsert(q.row, { onConflict: q.t === "entry" ? "id" : "event,cat,heat" });
+        if (error && q.row.dns && /dns/.test(error.message || "")) {
+          queue.shift(); store.set("xc-live-queue", queue); entries.delete(q.row.id);
+          alert("資料庫未支援缺席標記（未執行 009_live_dns.sql），此標記未能儲存。其他紀錄不受影響。"); renderAll(); continue;
+        }
         if (error) throw error;
         queue.shift(); store.set("xc-live-queue", queue);
       }
@@ -356,6 +368,12 @@
     const h = heatRow();
     const run = runnerOf(r.bib);
     lastReason = "";
+    const dns = dnsOf(r.bib);
+    if (dns) {
+      if (opt.voice) { lastReason = "已標記缺席，未記錄"; flash(`${r.bib} 已標記缺席，未記錄`, true); buzz(); return false; }
+      if (!confirm(`${r.bib} 已標記缺席。\n確定記錄？（會同時取消缺席標記）`)) return false;
+      enqueue("entry", strip({ ...dns, deleted: true }));
+    }
     if (run && run.fin && !opt.finish) { lastReason = "已完賽，未記錄"; flash(`${r.bib} 已完賽（${run.laps} 圈），不再記圈`, true); buzz(); return false; }
     let force = false;
     if (run) {
@@ -377,6 +395,114 @@
     lastReason = fin ? "完賽" : `第 ${lap} 圈`;
     buzz();
     return true;
+  }
+  /* ---------- 缺席 ----------
+     兩種方法（同一視窗切換，記住選擇）：
+     - 點名（預設）：按有到的號碼；按「點名完成」後，未點名者一次過標記缺席（已有經過紀錄者自動當有到）
+     - 按缺席：直接按沒有到的號碼
+     點名進度只存於本裝置（重新整理不會遺失）；缺席標記寫入資料庫（xc_live_entries.dns），其他裝置及公眾頁同步 */
+  const dnsOf = (bib) => [...entries.values()].find((e) => e.dns && !e.deleted && e.event === st.event && String(e.bib) === String(bib));
+  const dnsCount = () => inCat().filter((r) => dnsOf(r.bib)).length;
+  const dnsRow = (r) => ({ id: uuid(), event: st.event, cat: r.cat || st.cat, heat: r.heat || st.heat, bib: Number(r.bib), abbr: r.abbr || "?", pid: r.pid || null, name: r.name || null,
+                           at_ms: now(), seq: nextSeq(), deleted: false, fin: false, force: false, dns: true });
+  function toggleDns(r) {
+    const cur = dnsOf(r.bib);
+    if (cur) { act(strip({ ...cur, deleted: true }), `取消缺席 ${r.bib}`); flash(`${r.bib} 已取消缺席`); return; }
+    if (runnerOf(r.bib)) { flash(`${r.bib} 已有經過紀錄，不能標記缺席`, true); return; }
+    act(dnsRow(r), `缺席 ${r.bib}`);
+    flash(`${r.bib} 已標記缺席`); buzz();
+  }
+  // 點名進度：{ "event|cat|heat": { p: [號碼], done: 是否已按點名完成 } }
+  let RC_MEM = {};
+  const rcKey = () => `${st.event}|${st.cat}|${st.heat}`;
+  const rcAll = () => (PRACTICE ? RC_MEM : store.get("xc-rollcall", {}));
+  const rcGet = () => { const x = rcAll()[rcKey()] || {}; return { p: new Set((x.p || []).map(String)), done: !!x.done }; };
+  const rcSet = (rc) => { const all = rcAll(); all[rcKey()] = { p: [...rc.p], done: rc.done }; if (PRACTICE) RC_MEM = all; else store.set("xc-rollcall", all); };
+
+  function dnsSheet() {
+    const grp = grpName(st.cat, st.heat);
+    const list = inCat();
+    const hasSeq = list.some((r) => r.seq != null);
+    sheet(`<div class="dns-head"><h2>出席・${esc(grp)}</h2><button value="close" class="ghost" autofocus>關閉</button></div>
+      <div class="dns-order dns-mode" role="radiogroup" aria-label="方法"><button type="button" data-m="present" role="radio">點名（按有到）</button><button type="button" data-m="absent" role="radio">按缺席</button></div>
+      <p class="muted" id="dnsHelp"></p>
+      ${hasSeq ? `<div class="dns-order" role="radiogroup" aria-label="排列"><button type="button" data-o="prog" role="radio">秩序冊次序</button><button type="button" data-o="school" role="radio">按學校</button></div>` : ""}
+      <input id="dnsFind" class="dns-find" inputmode="numeric" placeholder="輸入號碼篩選" autocomplete="off">
+      <div class="dns-wrap" id="dnsWrap"></div>
+      <div class="dns-foot" id="dnsFoot"></div>`, () => renderAll());
+
+    const wrap = $("#dnsWrap"), body = $("#sheetBody");
+    const draw = () => {
+      const mode = st.dnsMode === "absent" ? "absent" : "present";
+      const order = st.dnsOrder === "school" || !hasSeq ? "school" : "prog";
+      const R = ranked(), seen = new Set(R.runners.map((x) => x.key)), rc = rcGet();
+      body.querySelectorAll("[data-m]").forEach((b) => b.setAttribute("aria-checked", b.dataset.m === mode));
+      body.querySelectorAll("[data-o]").forEach((b) => b.setAttribute("aria-checked", b.dataset.o === order));
+      $("#dnsHelp").textContent = mode === "present"
+        ? "按有到的號碼（再按取消）；點完按「點名完成」，未點名者即標記為缺席。已有經過紀錄者自動當有到。"
+        : "按沒有起跑的號碼，再按一下取消。缺席者不計名次；學校扣除缺席者後不足計分人數，公眾頁即顯示「人數不足，不計分」。";
+      const stOf = (r) => {
+        const b = String(r.bib);
+        if (seen.has(`b${b}`)) return { cls: "", dis: true, txt: "已有紀錄" };
+        if (dnsOf(b)) return { cls: "on", txt: "缺席" };
+        if (mode === "present" && rc.p.has(b)) return { cls: "here", txt: "有到" };
+        return { cls: "", txt: "" };
+      };
+      const btn = (r, inner) => { const x = stOf(r); return `<button type="button" data-db="${r.bib}" class="${x.cls}" ${x.dis ? "disabled" : ""}>${inner(x)}</button>`; };
+      const keep = wrap.scrollTop;
+      if (!list.length) wrap.innerHTML = `<p class="muted">${ROSTER.size ? "本組未有號碼布名單。" : "未載入號碼布名單。"}</p>`;
+      else if (order === "prog") {
+        // 秩序冊次序：一行一人，與印刷本逐行對照
+        const rows = list.slice().sort((a, b) => (a.heat || 0) - (b.heat || 0) || (a.seq ?? 1e4) - (b.seq ?? 1e4) || a.bib - b.bib);
+        wrap.innerHTML = `<div class="dns-rows">${rows.map((r) => btn(r, (x) => `<span class="sq">${r.seq ?? ""}</span><b>${r.bib}</b><span class="pn">${esc(personOf(r))}</span><span class="ab">${esc(r.abbr)}</span><small>${x.txt}</small>`)).join("")}</div>`;
+      } else {
+        const bySch = new Map();
+        for (const r of list.slice().sort((a, b) => a.bib - b.bib)) { if (!bySch.has(r.abbr)) bySch.set(r.abbr, []); bySch.get(r.abbr).push(r); }
+        wrap.innerHTML = [...bySch].map(([abbr, rs]) => `<div class="dns-sch">${esc(SCHOOL.get(abbr) || abbr)}（${rs.length} 人）</div><div class="dns-list">${rs.map((r) => btn(r, (x) => `<b>${r.bib}</b><small>${x.txt || esc(personOf(r) || abbr)}</small>`)).join("")}</div>`).join("");
+      }
+      wrap.scrollTop = keep;
+      filter();
+      // 底部：點名進度／缺席人數
+      const ran = list.filter((r) => seen.has(`b${r.bib}`)).length;
+      const nDns = list.filter((r) => !seen.has(`b${r.bib}`) && dnsOf(r.bib)).length;
+      const here = list.filter((r) => !seen.has(`b${r.bib}`) && !dnsOf(r.bib) && rc.p.has(String(r.bib))).length;
+      const left = list.length - ran - nDns - here;
+      const foot = $("#dnsFoot");
+      if (mode === "present") {
+        foot.innerHTML = `<p class="muted">已點名 <b class="dns-n" id="dnsHere">${here + ran}</b>／${list.length} 人${ran ? `（其中 ${ran} 人已有經過紀錄）` : ""} · 缺席 <b class="dns-n" id="dnsN">${nDns}</b> 人</p>
+          ${rc.done && !left ? `<button type="button" class="ghost" id="rcUndo">取消點名完成（移除本組 ${nDns} 個缺席標記）</button>`
+            : `<button type="button" class="primary" id="rcDone" ${left ? "" : "disabled"}>點名完成：未點名的 ${left} 人標記缺席</button>`}`;
+      } else foot.innerHTML = `<p class="muted">本組已標記缺席 <b class="dns-n" id="dnsN">${nDns}</b> 人</p>`;
+      const done = $("#rcDone"), undoRc = $("#rcUndo");
+      if (done) done.onclick = () => {
+        const miss = list.filter((r) => !seen.has(`b${r.bib}`) && !dnsOf(r.bib) && !rc.p.has(String(r.bib)));
+        if (!miss.length) return;
+        if (!confirm(`未點名的 ${miss.length} 人將標記為缺席：\n${miss.map((r) => r.bib).join("、")}\n確定？`)) return;
+        for (const r of miss) enqueue("entry", dnsRow(r));
+        rc.done = true; rcSet(rc);
+        flash(`點名完成：缺席 ${miss.length + nDns} 人`); buzz(); draw();
+      };
+      if (undoRc) undoRc.onclick = () => {
+        const marks = list.map((r) => dnsOf(r.bib)).filter(Boolean);
+        if (!confirm(`取消點名完成？會移除本組 ${marks.length} 個缺席標記，點名紀錄保留。`)) return;
+        for (const e of marks) enqueue("entry", strip({ ...e, deleted: true }));
+        rc.done = false; rcSet(rc); flash("已取消點名完成"); draw();
+      };
+      wrap.querySelectorAll("[data-db]").forEach((b) => b.onclick = () => {
+        const r = ROSTER.get(b.dataset.db); if (!r) return;
+        if (mode === "absent") { toggleDns(r); draw(); return; }
+        const k = String(r.bib), cur = dnsOf(k), rc2 = rcGet();
+        if (cur) { act(strip({ ...cur, deleted: true }), `取消缺席 ${k}`); rc2.p.add(k); flash(`${k} 有到（已取消缺席）`); }
+        else if (rc2.p.has(k)) rc2.p.delete(k);
+        else { rc2.p.add(k); buzz(); }
+        rcSet(rc2); draw();
+      });
+    };
+    const filter = () => { const q = ($("#dnsFind").value || "").replace(/\D/g, ""); wrap.querySelectorAll("[data-db]").forEach((b) => { b.hidden = !!q && !b.dataset.db.includes(q); }); };
+    $("#dnsFind").oninput = filter;
+    body.querySelectorAll("[data-m]").forEach((b) => b.onclick = () => { st.dnsMode = b.dataset.m; save(); draw(); });
+    body.querySelectorAll("[data-o]").forEach((b) => b.onclick = () => { st.dnsOrder = b.dataset.o; save(); wrap.scrollTop = 0; draw(); });
+    draw();
   }
   function markFinish() {
     act({ id: uuid(), event: st.event, cat: st.cat, heat: st.heat, bib: null, abbr: "?", pid: null, name: null, at_ms: now(), seq: nextSeq(), deleted: false, fin: false, force: false }, "空位");
@@ -444,7 +570,8 @@
       const list = inCat().sort((a, b) => (order.has(String(a.bib)) ? order.get(String(a.bib)) : 1e4) - (order.has(String(b.bib)) ? order.get(String(b.bib)) : 1e4) || a.bib - b.bib);
       box.className = "grid";
       box.innerHTML = list.length ? list.map((r) => { const x = byKey.get(`b${r.bib}`), n = x ? x.laps : 0;
-        return `<li class="${x && x.fin ? "fin" : n ? "run" : ""}"><button data-gb="${r.bib}"><b>${r.bib}</b><span>${esc(personOf(r) || r.abbr)}</span><i>${x && x.fin ? "完賽" : `${n}／${L}`}</i></button></li>`; }).join("")
+        const ab = !x && dnsOf(r.bib);
+        return `<li class="${x && x.fin ? "fin" : n ? "run" : ab ? "dns" : ""}"><button data-gb="${r.bib}"><b>${r.bib}</b><span>${esc(personOf(r) || r.abbr)}</span><i>${ab ? "缺席" : x && x.fin ? "完賽" : `${n}／${L}`}</i></button></li>`; }).join("")
         : `<li class="empty">${ROSTER.size ? "本組未有號碼布名單。" : "未載入號碼布名單。"}</li>`;
       box.querySelectorAll("[data-gb]").forEach((b) => b.onclick = () => { const r = ROSTER.get(b.dataset.gb); if (r) recordPass(r, now()); });
     } else if (st.tab === "course") {
@@ -484,7 +611,7 @@
       box.innerHTML = rows.length ? rows.map((e) => {
         const h = R.hs[e.heat];
         const t = h && h.start_ms != null ? e.at_ms - h.start_ms : null;
-        const tag = e.deleted ? "已刪除" : XCLive.isSlot(e) ? "待補號碼" : R.ignored.has(e.id) ? why[R.ignored.get(e.id)] : label.get(e.id) || "";
+        const tag = e.deleted ? (e.dns ? "缺席（已取消）" : "已刪除") : e.dns ? (R.absent.has(`b${e.bib}`) ? "缺席" : "缺席（已有經過紀錄，不計）") : XCLive.isSlot(e) ? "待補號碼" : R.ignored.has(e.id) ? why[R.ignored.get(e.id)] : label.get(e.id) || "";
         return `<li class="${e.deleted ? "del" : ""} ${XCLive.isSlot(e) ? "slot" : ""} ${R.ignored.has(e.id) ? "ign" : ""} ${e._pending ? "pending" : ""}" data-id="${e.id}">
           <span class="tt">${fmtT(t)}</span><span class="bb">${e.bib ?? "—"}</span>
           <span class="nm">${esc(schOf(e))}<small>${esc(tag)}</small></span></li>`;
@@ -492,6 +619,8 @@
       box.querySelectorAll("li[data-id]").forEach((el) => el.onclick = () => editEntry(el.dataset.id));
     }
     box.scrollTop = keep;
+    const nd = dnsCount();
+    $("#dnsBtn").textContent = nd ? `缺席 ${nd}` : "點名";
     $("#undoBtn").disabled = !undoLog.length;
     $("#undoBtn").textContent = undoLog.length ? `↶ 撤銷 ${undoLog[undoLog.length - 1].label}` : "↶ 撤銷";
   }
@@ -511,7 +640,7 @@
   function renderBubbles(R) {
     const box = $("#bubbles"), h = heatRow();
     const seen = new Set(R.runners.map((r) => r.key));
-    const top = h.status === "done" ? [] : predictedBibs().filter((r) => !seen.has(`b${r.bib}`)).slice(0, 5);
+    const top = h.status === "done" ? [] : predictedBibs().filter((r) => !seen.has(`b${r.bib}`) && !dnsOf(r.bib)).slice(0, 5);
     box.hidden = !top.length;
     const html = top.map((r) => `<button data-pb="${r.bib}"><b>${r.bib}</b><span>${esc(personOf(r) || SCHOOL.get(r.abbr) || r.abbr)}</span></button>`).join("");
     if (box.dataset.h !== html) {
@@ -605,7 +734,7 @@
       const { data } = await sb.auth.getSession();
       if (data.session) {
         const ok = await sb.rpc("xc_is_admin");
-        if (ok.data) { const r = await sb.from("xc_live_roster").select("bib,cat,heat,abbr,pid,name").eq("event", "test").lte("bib", 999).limit(5000); if (!r.error && r.data.length) real = r.data; }
+        if (ok.data) { const r = await rosterRows("test", (q) => q.lte("bib", 999)); if (!r.error && r.data.length) real = r.data; }
       }
     } catch (e) { real = null; }
     if (real) {
@@ -778,6 +907,7 @@
   });
   $("#markBtn").onclick = markFinish;
   $("#schoolBtn").onclick = bySchool;
+  $("#dnsBtn").onclick = dnsSheet;
   $("#undoBtn").onclick = undo;
   $("#grp").onchange = (e) => chooseGroup(e.target.value);
   voiceInit();

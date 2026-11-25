@@ -1,7 +1,7 @@
 """產生即時成績用的號碼布對照 SQL（不含姓名）。
 
 輸入：private/startlist48.csv（需有 bib 欄：號碼布）＋ private/preview48_review.csv（preview.py 的配對結果）
-輸出：private/live_roster48.sql —— 號碼布、組別、分組、學校代碼、已公開往績者的學生編號（pid）、姓名（秩序冊已公開；
+輸出：private/live_roster48.sql —— 號碼布、組別、分組、秩序冊次序（seq）、學校代碼、已公開往績者的學生編號（pid）、姓名（秩序冊已公開；
       scripts/redactions.json 內應要求隱藏者不輸出姓名）
       檔案放在 private/（不入 repo），再於 Supabase 執行一次即可。
 
@@ -43,16 +43,17 @@ for r in rows:
     name = (r.get("name_zh") or r.get("name_pt") or "").strip()[:60]
     if pid in hidden:
         name = ""
-    out.append((int(bib), r["cat"], int(heat) if heat.strip().isdigit() else None, r["abbr"], pid, name))
+    seq = int(r["seq"]) if (r.get("seq") or "").strip().isdigit() else None
+    out.append((int(bib), r["cat"], int(heat) if heat.strip().isdigit() else None, r["abbr"], pid, name, seq))
 
 if problems:
     print("\n".join(problems))
     sys.exit(f"有 {len(problems)} 個問題，未輸出")
 
-sql = ["-- 第 %s 屆號碼布對照（含秩序冊姓名，只限工作人員讀取；須先執行 005_live_laps.sql）；由 scripts/live_roster.py 產生" % event,
-       "insert into public.xc_live_roster (event, bib, cat, heat, abbr, pid, name) values"]
-vals = [f"('{event}', {b}, '{c}', {h if h else 'null'}, '{a}', {sq(p) if p else 'null'}, {sq(n) if n else 'null'})" for b, c, h, a, p, n in sorted(out)]
+sql = ["-- 第 %s 屆號碼布對照（含秩序冊姓名及次序，只限工作人員讀取；須先執行 005_live_laps.sql、010_roster_seq.sql）；由 scripts/live_roster.py 產生" % event,
+       "insert into public.xc_live_roster (event, bib, cat, heat, abbr, pid, name, seq) values"]
+vals = [f"('{event}', {b}, '{c}', {h if h else 'null'}, '{a}', {sq(p) if p else 'null'}, {sq(n) if n else 'null'}, {q if q else 'null'})" for b, c, h, a, p, n, q in sorted(out)]
 sql.append(",\n".join(vals))
-sql.append("on conflict (event, bib) do update set cat = excluded.cat, heat = excluded.heat, abbr = excluded.abbr, pid = excluded.pid, name = excluded.name;")
+sql.append("on conflict (event, bib) do update set cat = excluded.cat, heat = excluded.heat, abbr = excluded.abbr, pid = excluded.pid, name = excluded.name, seq = excluded.seq;")
 pathlib.Path(out_p).write_text("\n".join(sql) + "\n", encoding="utf-8")
 print(f"已輸出 {len(out)} 個號碼布（其中 {sum(1 for x in out if x[4])} 人有公開往績）→ {out_p}")
