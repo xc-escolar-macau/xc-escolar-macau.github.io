@@ -14,11 +14,11 @@ CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*",
 MO = timezone(timedelta(hours=8))
 
 
-def _jpeg(w=3000, h=2000, when="2026:11:29 08:10:00", color=(40, 120, 200)):
+def _jpeg(w=3000, h=2000, when="2026:11:29 08:10:00", color=(40, 120, 200), model="TestCam"):
     """產生含 EXIF 拍攝時間及 GPS 的 JPEG（用來確認上載檔已去除 EXIF）"""
     im = Image.new("RGB", (w, h), color)
     ex = Image.Exif()
-    ex[0x0110] = "TestCam"
+    ex[0x0110] = model
     ex.get_ifd(0x8769)[0x9003] = when
     ex.get_ifd(0x8825)[2] = (22.0, 9.0, 0.0)   # GPSLatitude
     buf = io.BytesIO(); im.save(buf, "JPEG", exif=ex.tobytes(), quality=80)
@@ -328,6 +328,92 @@ def test_photo_admin_layout_phone(adm):
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
     box = page.locator("#pick").bounding_box()
     assert box["height"] >= 56 and box["y"] < 300
+
+
+def test_photo_admin_skips_already_uploaded(adm, tmp_path):
+    """相機自動傳相後重複揀同一批：已上載的相片略過；換裝置（本機紀錄清空）亦按伺服器紀錄略過"""
+    page = adm
+    page.db["fn_mode"] = []
+    _login(page)
+    f1 = tmp_path / "DSC_0001.jpg"; f1.write_bytes(_jpeg())
+    page.set_input_files("#files", [str(f1)])
+    _until(page, lambda: len(page.db["photos"]) == 1 and next(iter(page.db["photos"].values()))["status"] != "uploaded")
+    row = next(iter(page.db["photos"].values()))
+    assert row["src_key"].startswith("x") and row["camera"] == "TestCam"
+    f2 = tmp_path / "DSC_0002.jpg"; f2.write_bytes(_jpeg(3000, 2000, "2026:11:29 08:10:01", (10, 200, 10)))
+    page.set_input_files("#files", [str(f1), str(f2)])
+    expect(page.locator("#prep")).to_contain_text("略過 1 張（之前已上載）")
+    _until(page, lambda: len(page.db["photos"]) == 2)
+    # 本機紀錄清空（例如換了手機）：仍按伺服器上的 src_key 略過
+    page.evaluate("localStorage.removeItem('xc-photo-seen')")
+    page.reload()
+    expect(page.locator("#app")).to_be_visible()
+    expect(page.locator("#nApproved")).to_have_text("2")   # 伺服器紀錄已載入
+    page.set_input_files("#files", [str(f1), str(f2)])
+    expect(page.locator("#prep")).to_contain_text("已加入 0 張；略過 2 張")
+    page.wait_for_timeout(500)
+    assert len(page.db["photos"]) == 2
+
+
+def test_photo_admin_camera_clock(adm, tmp_path):
+    """相機時間校正：影本頁時鐘 → 揀相 → 輸入相中時間；之後同型號相片自動更正，其他型號（手機）不變"""
+    page = adm
+    page.db["fn_mode"] = []
+    _login(page)
+    expect(page.locator("#clockBtn")).to_have_text("相機時間：未校正")
+    page.click("#clockBtn")
+    expect(page.locator("#clock")).to_be_visible()
+    expect(page.locator("#clockNow")).to_have_text(re.compile(r"^\d{2}:\d{2}:\d{2}$"))
+    assert page.evaluate("document.activeElement.id") != "clockSeen"   # 開啟時不自動彈出鍵盤
+    shot = tmp_path / "clock.jpg"; shot.write_bytes(_jpeg(1200, 800, "2026:11:29 08:10:00", (0, 0, 0), "Canon EOS R6"))
+    page.set_input_files("#clockFile", [str(shot)])
+    expect(page.locator("#clockInfo")).to_contain_text("Canon EOS R6")
+    expect(page.locator("#clockInfo")).to_contain_text("08:10:00")
+    page.fill("#clockSeen", "12:34")
+    page.click("#clockApply")
+    expect(page.locator("#clockMsg")).to_contain_text("例如 081048")
+    page.fill("#clockSeen", "080948")   # 相機快 12 秒
+    page.click("#clockApply")
+    expect(page.locator("#clockMsg")).to_contain_text("快 12 秒")
+    expect(page.locator("#clockList")).to_contain_text("Canon EOS R6")
+    no_hscroll(page)
+    page.click("#clock .clock-head button")
+    expect(page.locator("#clockBtn")).to_have_text("相機時間：已校正 1 部")
+    # 校正保存於本機：重新整理後仍在
+    page.reload()
+    expect(page.locator("#clockBtn")).to_have_text("相機時間：已校正 1 部")
+    cam = tmp_path / "cam.jpg"; cam.write_bytes(_jpeg(3000, 2000, "2026:11:29 09:00:00", (200, 30, 30), "Canon EOS R6"))
+    phone = tmp_path / "phone.jpg"; phone.write_bytes(_jpeg(3000, 2000, "2026:11:29 09:00:00", (30, 30, 200), "iPhone 15"))
+    page.set_input_files("#files", [str(cam), str(phone)])
+    _until(page, lambda: len(page.db["photos"]) == 2)
+    by = {r["camera"]: r for r in page.db["photos"].values()}
+    base = int(datetime(2026, 11, 29, 9, 0, tzinfo=MO).timestamp() * 1000)
+    assert by["Canon EOS R6"]["taken_ms"] == base - 12000 and by["Canon EOS R6"]["clock_off_s"] == 12
+    assert by["iPhone 15"]["taken_ms"] == base and by["iPhone 15"]["clock_off_s"] is None
+    # 清除校正
+    page.click("#clockBtn")
+    page.click("#clockList [data-clear='Canon EOS R6']")
+    expect(page.locator("#clockList")).to_contain_text("未有已校正的相機")
+
+
+def test_photo_admin_clock_formats_and_midnight(adm, tmp_path):
+    """輸入「8:10:48」格式；相機慢時顯示「慢」；相差跨越午夜時取最近的差距"""
+    page = adm
+    _login(page)
+    page.click("#clockBtn")
+    a = tmp_path / "a.jpg"; a.write_bytes(_jpeg(1200, 800, "2026:11:29 08:10:00", (0, 0, 0), "Sony ILCE-7M4"))
+    page.set_input_files("#clockFile", [str(a)])
+    expect(page.locator("#clockInfo")).to_contain_text("Sony ILCE-7M4")
+    page.fill("#clockSeen", "8:11:30")
+    page.click("#clockApply")
+    expect(page.locator("#clockMsg")).to_contain_text("慢 1 分 30 秒")
+    b = tmp_path / "b.jpg"; b.write_bytes(_jpeg(1200, 800, "2026:11:30 00:00:05", (0, 0, 0), "Nikon Z 6_2"))
+    page.set_input_files("#clockFile", [str(b)])
+    expect(page.locator("#clockInfo")).to_contain_text("Nikon Z 6_2")
+    page.fill("#clockSeen", "235955")
+    page.click("#clockApply")
+    expect(page.locator("#clockMsg")).to_contain_text("快 10 秒")
+    expect(page.locator("#clockList li")).to_have_count(2)
 
 
 def test_sql_lookup_requires_name_and_hides_bibs():

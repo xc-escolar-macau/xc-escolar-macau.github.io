@@ -16,7 +16,10 @@ create table if not exists public.xc_photos (
   h int check (h between 1 and 4000),
   taken_ms bigint,                             -- 拍攝時刻（epoch 毫秒）；來源見 taken_src
   taken_src text check (taken_src in ('exif', 'file', 'upload')),
-  ai_bibs int[],                               -- Gemini 讀出的號碼布（原始結果）
+  camera text check (camera is null or length(camera) <= 60),            -- 相機型號（EXIF Make＋Model）
+  clock_off_s int check (clock_off_s is null or abs(clock_off_s) <= 86400), -- 已套用的相機時間誤差（秒，正數＝相機快）；taken_ms 已更正
+  src_key text check (src_key is null or length(src_key) <= 300),         -- 原檔指紋（拍攝時間＋檔案大小），用來略過重複上載
+  ai_bibs int[],                              -- Gemini 讀出的號碼布（原始結果）
   ai_unsure int[],                             -- Gemini 標示不確定的號碼布
   ai_raw text check (ai_raw is null or length(ai_raw) <= 4000),
   bibs int[] not null default '{}',            -- 公開查詢用的號碼布（自動判斷或人手改正後）
@@ -27,7 +30,11 @@ create table if not exists public.xc_photos (
   created_at timestamptz not null default now(),
   rev bigint not null default nextval('public.xc_live_rev')
 );
+alter table public.xc_photos add column if not exists camera text check (camera is null or length(camera) <= 60);
+alter table public.xc_photos add column if not exists clock_off_s int check (clock_off_s is null or abs(clock_off_s) <= 86400);
+alter table public.xc_photos add column if not exists src_key text check (src_key is null or length(src_key) <= 300);
 create index if not exists xc_photos_bibs on public.xc_photos using gin (bibs);
+create index if not exists xc_photos_src on public.xc_photos (event, src_key);
 create index if not exists xc_photos_rev on public.xc_photos (event, rev);
 
 drop trigger if exists xc_photos_bump on public.xc_photos;

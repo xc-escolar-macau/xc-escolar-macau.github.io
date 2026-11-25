@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="live-admin.css?v=20261123c">
-<link rel="stylesheet" href="photo-admin.css?v=20261124a">
+<link rel="stylesheet" href="photo-admin.css?v=20261125a">
 </head>
 <body>
 <header class="top">
@@ -37,6 +37,7 @@
       <option value="48">正式（第 48 屆）</option>
       <option value="test">演練（不公開）</option>
     </select>
+    <button type="button" id="clockBtn" class="ghost">相機時間：未校正</button>
   </section>
 
   <label class="pick" id="pick">
@@ -67,7 +68,28 @@
   <form method="dialog" id="sheetBody"></form>
 </dialog>
 
+<!-- 相機時間校正 -->
+<dialog id="clock">
+  <form method="dialog">
+    <div class="clock-head"><h2>相機時間校正</h2><button type="submit" class="ghost">關閉</button></div>
+    <p class="muted">相片要靠拍攝時間判斷該組是否在跑道上。相機時鐘不準，相片會全部留待覆核。比賽前每部相機做一次即可。</p>
+    <ol class="clock-steps">
+      <li>用相機影下面這個時鐘（手機時間）</li>
+      <li>等相片傳到手機後，在下面揀這張相片</li>
+      <li>輸入相中時鐘顯示的時間</li>
+    </ol>
+    <div id="clockNow" class="clock-now" aria-live="off">--:--:--</div>
+    <label class="clock-file">揀剛才影的時鐘相片<input id="clockFile" type="file" accept="image/*"></label>
+    <p id="clockInfo" class="muted"></p>
+    <label>相中時鐘顯示的時間<input id="clockSeen" inputmode="numeric" autocomplete="off" placeholder="例如 081048 或 8:10:48"></label>
+    <button type="button" id="clockApply" class="primary" autofocus>計算並套用</button>
+    <p id="clockMsg" class="msg" role="alert"></p>
+    <h3 class="clock-sub">已校正的相機</h3>
+    <ul id="clockList" class="clock-list"></ul>
+  </form>
+</dialog>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
-<script src="photo-admin.js?v=20261124a"></script>
+<script src="photo-admin.js?v=20261125a"></script>
 </body>
 </html>

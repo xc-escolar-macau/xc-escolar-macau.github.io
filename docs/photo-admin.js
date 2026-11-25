@@ -33,8 +33,9 @@
   })();
   let queue = []; // 佇列項目（記憶體副本）
 
-  /* ---------- 拍攝時間：讀 JPEG EXIF 的 DateTimeOriginal（及 OffsetTimeOriginal；沒有時區即按澳門時間） ---------- */
-  async function exifTime(file) {
+  /* ---------- 拍攝時間：讀 JPEG EXIF 的 DateTimeOriginal（及 SubSecTimeOriginal、OffsetTimeOriginal；沒有時區即按澳門時間）
+     回傳 { ms, cam }：cam 為相機型號（Make＋Model），用來按相機分別校正時間 ---------- */
+  async function exifInfo(file) {
     try {
       const buf = new DataView(await file.slice(0, 256 * 1024).arrayBuffer());
       if (buf.getUint16(0) !== 0xFFD8) return null;
@@ -54,6 +55,9 @@
     const str = (o, n) => { let s = ""; for (let i = 0; i < n; i++) { const c = v.getUint8(t + o + i); if (!c) break; s += String.fromCharCode(c); } return s; };
     const ifd = (o) => { const out = {}; const n = u16(o); for (let i = 0; i < n; i++) { const e = o + 2 + i * 12; const tag = u16(e), cnt = u32(e + 4); out[tag] = { cnt, val: cnt > 4 ? u32(e + 8) : e + 8, raw: u32(e + 8) }; } return out; };
     const ifd0 = ifd(u32(4));
+    const tag = (o, k) => (o[k] ? str(o[k].val, o[k].cnt).trim() : "");
+    const make = tag(ifd0, 0x010F), model = tag(ifd0, 0x0110);
+    const cam = (model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`).trim().slice(0, 60);
     if (!ifd0[0x8769]) return null;
     const ex = ifd(ifd0[0x8769].raw);
     const d = ex[0x9003] || ex[0x9004];
@@ -62,8 +66,31 @@
     if (!m) return null;
     const off = ex[0x9011] ? str(ex[0x9011].val, ex[0x9011].cnt) : "";
     const tz = /^[+-]\d{2}:\d{2}$/.test(off) ? off : "+08:00";
-    const ms = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${tz}`);
-    return Number.isFinite(ms) ? ms : null;
+    const sub = (tag(ex, 0x9291).match(/^\d{1,3}/) || [""])[0].padEnd(3, "0");
+    const ms = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.${sub}${tz}`);
+    return Number.isFinite(ms) ? { ms, cam } : null;
+  }
+
+  /* ---------- 相機時間校正：每部相機一個誤差（秒，正數＝相機快），只套用於該型號相片的 EXIF 時間 ---------- */
+  const CAM_NONE = "（未知型號）";
+  const camName = (cam) => cam || CAM_NONE;
+  const clockOff = (cam) => (st.clock && Number(st.clock[camName(cam)])) || 0;
+  const fmtOff = (s) => s === 0 ? "準確" : `${s > 0 ? "快" : "慢"} ${Math.floor(Math.abs(s) / 60) ? `${Math.floor(Math.abs(s) / 60)} 分 ` : ""}${Math.abs(s) % 60} 秒`;
+
+  /* ---------- 略過已上載：同一張相片（拍攝時間＋檔案大小）不會上載兩次 ---------- */
+  const srcKey = (f, ex) => ex ? `x${ex.ms}|${f.size}` : `f${f.name}|${f.size}|${f.lastModified || 0}`;
+  const seenAll = store.get("xc-photo-seen", {});
+  const seenSet = (ev) => new Set(seenAll[ev] || []);
+  function markSeen(ev, keys) {
+    if (!keys.length) return;
+    seenAll[ev] = [...(seenAll[ev] || []), ...keys].slice(-5000);
+    store.set("xc-photo-seen", seenAll);
+  }
+  function alreadyHave(ev, key, local) {
+    if (local.has(key)) return true;
+    if (queue.some((q) => q.event === ev && q.src_key === key)) return true;
+    for (const p of photos.values()) if (p.src_key === key) return true;   // 其他裝置上載過的亦略過
+    return false;
   }
 
   /* ---------- 壓縮：Safari 不支援輸出 WebP 時改用 JPEG ---------- */
@@ -79,29 +106,40 @@
   }
   async function prepare(files) {
     const list = [...files].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|heic|heif|png|webp)$/i.test(f.name));
-    const el = $("#prep");
-    let done = 0, bad = 0;
+    const el = $("#prep"), ev = st.event, local = seenSet(ev);
+    let done = 0, bad = 0, skip = 0, future = 0, added = 0;
     el.hidden = false;
     for (const f of list) {
       el.textContent = `壓縮中 ${done + 1}／${list.length}……`;
       try {
-        const exif = await exifTime(f);
+        const exif = await exifInfo(f);
+        const key = srcKey(f, exif);
+        if (alreadyHave(ev, key, local)) { skip++; done++; continue; }
         const bmp = await createImageBitmap(f, { imageOrientation: "from-image" });
         const full = await shrink(bmp, FULL), thumb = await shrink(bmp, THUMB);
         if (bmp.close) bmp.close();
+        const off = exif ? clockOff(exif.cam) : 0;
+        const taken = exif ? exif.ms - off * 1000 : (f.lastModified || null);
+        if (exif && taken > Date.now() + 5 * 60000) future++;
         const id = uuid();
         const item = {
-          id, event: st.event, name: f.name, full: full.blob, thumb: thumb.blob, ext: full.ext, text: thumb.ext, w: full.w, h: full.h,
-          taken_ms: exif || (f.lastModified || null), taken_src: exif ? "exif" : f.lastModified ? "file" : "upload",
+          id, event: ev, name: f.name, full: full.blob, thumb: thumb.blob, ext: full.ext, text: thumb.ext, w: full.w, h: full.h,
+          taken_ms: taken, taken_src: exif ? "exif" : f.lastModified ? "file" : "upload",
+          camera: exif ? exif.cam || null : null, clock_off_s: off || null, src_key: key,
           stage: "ready", tries: 0, next_at: 0, err: "", added: Date.now(),
         };
         await IDB.put(item); queue.push(item);
+        local.add(key); markSeen(ev, [key]); added++;
       } catch (e) { bad++; console.warn(f.name, e); }
       done++;
       renderAll();
     }
-    el.textContent = bad ? `已加入 ${done - bad} 張；${bad} 張未能讀取（格式不支援）` : `已加入 ${done} 張，正在上載`;
-    setTimeout(() => { el.hidden = true; }, 4000);
+    const parts = [`已加入 ${added} 張`];
+    if (skip) parts.push(`略過 ${skip} 張（之前已上載）`);
+    if (bad) parts.push(`${bad} 張未能讀取（格式不支援）`);
+    if (future) parts.push(`${future} 張拍攝時間比現在遲，相機時間可能不準，請按「相機時間」校正`);
+    el.textContent = parts.join("；") + (added ? "，正在上載" : "");
+    setTimeout(() => { el.hidden = true; }, future ? 12000 : 5000);
     $("#files").value = "";
     work();
   }
@@ -131,7 +169,8 @@
         q.stage = "uploaded"; q.err = ""; await IDB.put(q);
       }
       if (q.stage === "uploaded") {
-        const row = { id: q.id, event: q.event, full_path: p.full, thumb_path: p.thumb, w: q.w, h: q.h, taken_ms: q.taken_ms, taken_src: q.taken_src };
+        const row = { id: q.id, event: q.event, full_path: p.full, thumb_path: p.thumb, w: q.w, h: q.h, taken_ms: q.taken_ms, taken_src: q.taken_src,
+          camera: q.camera || null, clock_off_s: q.clock_off_s || null, src_key: q.src_key || null };
         const { error } = await sb.from("xc_photos").upsert(row, { onConflict: "id", ignoreDuplicates: true });
         if (error) throw error;
         q.stage = "row"; q.err = ""; await IDB.put(q);
@@ -169,7 +208,7 @@
   function mergePhoto(r) { if (photos.has(r.id)) photos.set(r.id, { ...photos.get(r.id), ...r }); }  // 只更新已載入的紀錄；新紀錄由 pull 取得完整資料
   async function pull(full) {
     if (full) { rev = 0; photos.clear(); }
-    const { data, error } = await sb.from("xc_photos").select("id,event,full_path,thumb_path,w,h,taken_ms,taken_src,ai_bibs,ai_unsure,bibs,status,reason,reviewed,created_at,rev")
+    const { data, error } = await sb.from("xc_photos").select("id,event,full_path,thumb_path,w,h,taken_ms,taken_src,camera,clock_off_s,src_key,ai_bibs,ai_unsure,bibs,status,reason,reviewed,created_at,rev")
       .eq("event", st.event).gt("rev", rev).order("rev").limit(1000);
     if (error) { online = false; setSync(); return; }
     online = true;
@@ -188,7 +227,8 @@
     return `<span><b class="num">${bib}</b> ${esc(r.name || "（隱藏）")} <small>${esc(catLabel(r.cat))}${r.heat ? ` C${r.heat}` : ""} · ${esc(SCHOOL.get(r.abbr) || r.abbr)}</small></span>`;
   };
   const hhmm = (ms) => ms ? new Date(ms).toLocaleTimeString("zh-HK", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Macau" }) : "-";
-  const srcLabel = { exif: "", file: "（檔案時間）", upload: "（上載時間）" };
+  const srcLabels = { exif: "", file: "（檔案時間）", upload: "（上載時間）" };
+  const when = (p) => `${hhmm(p.taken_ms)}${srcLabels[p.taken_src] || ""}${p.clock_off_s ? "（已校正）" : ""}`;
 
   /* ---------- 畫面 ---------- */
   function setSync() {
@@ -210,7 +250,7 @@
     if (st.tab === "queue") {
       const qs = queue.filter((q) => q.event === st.event);
       note.textContent = qs.length ? "壓縮後的相片暫存在本機，上載及辨識完成後自動清走。" : "本機沒有待上載的相片。";
-      g.innerHTML = qs.map((q) => `<div class="card q"><img alt="" src="${q.thumbUrl || (q.thumbUrl = URL.createObjectURL(q.thumb))}"><div class="meta"><b>${esc({ ready: "等候上載", uploaded: "已上載檔案", row: "辨識中" }[q.stage] || q.stage)}</b><small>${esc(q.err || "")}</small><small>${hhmm(q.taken_ms)}${srcLabel[q.taken_src] || ""}</small></div></div>`).join("");
+      g.innerHTML = qs.map((q) => `<div class="card q"><img alt="" src="${q.thumbUrl || (q.thumbUrl = URL.createObjectURL(q.thumb))}"><div class="meta"><b>${esc({ ready: "等候上載", uploaded: "已上載檔案", row: "辨識中" }[q.stage] || q.stage)}</b><small>${esc(q.err || "")}</small><small>${when(q)}</small></div></div>`).join("");
       setSync(); return;
     }
     const show = (st.tab === "approved" ? appr : pend).sort((a, b) => (b.taken_ms || 0) - (a.taken_ms || 0));
@@ -220,7 +260,7 @@
         <div class="meta">
           <b>${(p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []).map((n) => esc(n)).join("、") || "讀不到號碼布"}${p.reviewed ? ' <i class="rv">✓</i>' : ""}</b>
           ${p.status === "uploaded" ? "<small>辨識中……</small>" : p.reason ? `<small class="why">${esc(p.reason)}</small>` : ""}
-          <small>${hhmm(p.taken_ms)}${srcLabel[p.taken_src] || ""}</small>
+          <small>${when(p)}</small>
         </div></button>`).join("") : `<p class="muted empty">${st.tab === "approved" ? "未有已公開的相片。" : "沒有待覆核的相片。"}</p>`;
     setSync();
   }
@@ -233,7 +273,7 @@
     const start = (p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []);
     f.innerHTML = `<h2>覆核相片</h2>
       <img class="big" alt="" src="${esc(pubUrl(p.full_path))}">
-      <p class="muted">拍攝 ${hhmm(p.taken_ms)}${srcLabel[p.taken_src] || ""} · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}</p>
+      <p class="muted">拍攝 ${when(p)}${p.camera ? ` · ${esc(p.camera)}` : ""}${p.clock_off_s ? `（相機${esc(fmtOff(p.clock_off_s))}）` : ""} · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}</p>
       ${p.reason ? `<p class="why">${esc(p.reason)}</p>` : ""}
       <label>相中號碼布（以空格或逗號分隔）<input id="bibsIn" inputmode="numeric" value="${esc(start.join(" "))}"></label>
       <div id="whoList" class="who-list"></div>
@@ -272,6 +312,61 @@
     $("#sheet").showModal();
   }
 
+  /* ---------- 相機時間校正 ----------
+     用相機影一張本頁的大時鐘（手機時間）→ 揀這張相片 → 輸入相中時鐘顯示的時間 → 相片 EXIF 時間減去該時間＝相機誤差
+     iPhone 的時間輸入不支援秒，所以改用數字輸入（081048 或 8:10:48） */
+  const macauDate = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: "Asia/Macau" });
+  const hms = (ms) => new Date(ms).toLocaleTimeString("zh-HK", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Macau" });
+  function parseHms(s) {
+    const t = String(s).trim();
+    let m = t.match(/^(\d{1,2})\D+(\d{1,2})\D+(\d{1,2})$/);
+    if (!m) { const d = t.replace(/\D/g, ""); if (d.length === 6 || d.length === 5) m = [null, d.slice(0, -4), d.slice(-4, -2), d.slice(-2)]; }
+    if (!m) return null;
+    const [h, mi, se] = m.slice(1).map(Number);
+    return h < 24 && mi < 60 && se < 60 ? `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(se).padStart(2, "0")}` : null;
+  }
+  let calib = null, clockTimer = 0;
+  function clockLabel() {
+    const n = Object.keys(st.clock || {}).length;
+    $("#clockBtn").textContent = n ? `相機時間：已校正 ${n} 部` : "相機時間：未校正";
+  }
+  function renderClockList() {
+    const c = st.clock || {};
+    const names = Object.keys(c);
+    $("#clockList").innerHTML = names.length ? names.map((k) => `<li><span><b>${esc(k)}</b> ${esc(fmtOff(c[k]))}</span><button type="button" class="ghost" data-clear="${esc(k)}">清除</button></li>`).join("")
+      : '<li class="muted">未有已校正的相機。手機本身影的相片不用校正。</li>';
+  }
+  function openClock() {
+    calib = null;
+    $("#clockFile").value = ""; $("#clockSeen").value = ""; $("#clockInfo").textContent = ""; $("#clockMsg").textContent = "";
+    renderClockList();
+    const tick = () => { $("#clockNow").textContent = hms(Date.now()); };
+    tick(); clearInterval(clockTimer); clockTimer = setInterval(tick, 200);
+    $("#clock").showModal();
+  }
+  async function clockPick(file) {
+    calib = null; $("#clockMsg").textContent = "";
+    const ex = file && await exifInfo(file);
+    if (!ex) { $("#clockInfo").textContent = "這張相片沒有拍攝時間資料，請直接用相機原檔（JPEG）。"; return; }
+    calib = ex;
+    $("#clockInfo").textContent = `相機：${camName(ex.cam)} · 相片記錄的時間 ${hms(ex.ms)}`;
+    $("#clockSeen").focus();
+  }
+  function clockApply() {
+    const msg = $("#clockMsg");
+    if (!calib) { msg.textContent = "請先揀相機影的時鐘相片。"; return; }
+    const seen = parseHms($("#clockSeen").value);
+    if (!seen) { msg.textContent = "請輸入相中時鐘顯示的時間，例如 081048 或 8:10:48。"; return; }
+    let diff = calib.ms - Date.parse(`${macauDate(calib.ms)}T${seen}+08:00`);
+    const DAY = 86400000;
+    while (diff > DAY / 2) diff -= DAY;
+    while (diff < -DAY / 2) diff += DAY;
+    const off = Math.round(diff / 1000), name = camName(calib.cam);
+    st.clock = { ...(st.clock || {}), [name]: off }; save();
+    msg.textContent = `已套用：${name} ${fmtOff(off)}。之後揀的相片會自動更正時間（已上載的不變）。`;
+    renderClockList(); clockLabel();
+  }
+
   /* ---------- 登入 ---------- */
   async function loadStatic() {
     const [site, race] = await Promise.all(["data/site.json", "data/race48.json"].map((u) => fetch(u, { cache: "no-cache" }).then((r) => r.json())));
@@ -307,6 +402,13 @@
     $("#logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
     $("#event").onchange = async () => { st.event = $("#event").value; save(); await loadRoster(); await pull(true); };
     $("#files").onchange = (e) => prepare(e.target.files);
+    $("#clockBtn").onclick = openClock;
+    $("#clockFile").onchange = (e) => clockPick(e.target.files[0]);
+    $("#clockApply").onclick = clockApply;
+    $("#clockSeen").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); clockApply(); } };
+    $("#clockList").onclick = (e) => { const b = e.target.closest("[data-clear]"); if (!b) return; delete st.clock[b.dataset.clear]; save(); renderClockList(); clockLabel(); };
+    $("#clock").addEventListener("close", () => clearInterval(clockTimer));
+    clockLabel();
     document.querySelectorAll(".tabs button").forEach((b) => { b.onclick = () => { st.tab = b.dataset.tab; save(); renderAll(); }; });
     $("#grid").onclick = (e) => { const c = e.target.closest(".card[data-id]"); if (c) openSheet(c.dataset.id); };
     window.addEventListener("online", () => { online = true; for (const q of queue) q.next_at = 0; work(); });
