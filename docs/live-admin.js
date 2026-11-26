@@ -18,7 +18,7 @@
   const PRACTICE = new URLSearchParams(location.search).has("practice");
 
   let PRED = {}, sb = null, RACE = null, RES = null, SCHOOL = new Map(), NAME = new Map(), ROSTER = new Map();
-  let offset = 0, rev = 0, bibBuf = "";
+  let offset = 0, rev = 0, revH = 0, bibBuf = "";
   const entries = new Map(), heats = new Map();
   let queue = PRACTICE ? [] : store.get("xc-live-queue", []);
   let undoLog = PRACTICE ? [] : store.get("xc-live-undo", []); // 本裝置的操作紀錄：[{id, before}]，供「撤銷上一下」
@@ -86,10 +86,19 @@
   }
 
   // 號碼布名單：seq＝秩序冊內的次序（010_roster_seq.sql）；資料庫未有該欄（或未執行 005）時逐步減少欄位
+  // Supabase（PostgREST）每次最多回傳 1000 行：名單、紀錄都要分批讀
+  const PAGE = 1000;
   async function rosterRows(event, more = (q) => q) {
     for (const cols of ["bib,cat,heat,abbr,pid,name,seq", "bib,cat,heat,abbr,pid,name", "bib,cat,heat,abbr,pid"]) {
-      const r = await more(sb.from("xc_live_roster").select(cols).eq("event", event)).limit(5000);
-      if (!r.error) return r;
+      const all = [];
+      let error = null;
+      for (let i = 0; ; i += PAGE) {
+        const r = await more(sb.from("xc_live_roster").select(cols).eq("event", event)).order("bib").range(i, i + PAGE - 1);
+        if (r.error) { error = r.error; break; }
+        all.push(...r.data);
+        if (r.data.length < PAGE) break;
+      }
+      if (!error) return { data: all, error: null };
     }
     return { data: null, error: true };
   }
@@ -104,17 +113,25 @@
   let online = true;
   async function pull(full) {
     if (PRACTICE) return;
-    if (full) { rev = 0; entries.clear(); heats.clear(); }
+    if (full) { rev = 0; revH = 0; entries.clear(); heats.clear(); }
     try {
+      // 紀錄與分組各自記住讀到的 rev：紀錄超過一批（1000 行）時，分組較新的 rev 不會令未讀的紀錄被跳過
       const [e, h] = await Promise.all([
-        sb.from("xc_live_entries").select("*").eq("event", st.event).gt("rev", rev).order("rev").limit(2000),
-        sb.from("xc_live_heats").select("cat,heat,start_ms,status,rev").eq("event", st.event).gt("rev", rev).order("rev"),
+        sb.from("xc_live_entries").select("*").eq("event", st.event).gt("rev", rev).order("rev").limit(PAGE),
+        sb.from("xc_live_heats").select("cat,heat,start_ms,status,rev").eq("event", st.event).gt("rev", revH).order("rev"),
       ]);
       if (e.error || h.error) throw e.error || h.error;
       let changed = false;
       const pendingIds = new Set(queue.filter((q) => q.t === "entry").map((q) => q.row.id));
-      for (const r of e.data) { if (!pendingIds.has(r.id)) entries.set(r.id, r); rev = Math.max(rev, r.rev); changed = true; }
-      for (const r of h.data) { const k = `${r.cat}|${r.heat}`; if (!queue.some((q) => q.t === "heat" && `${q.row.cat}|${q.row.heat}` === k)) heats.set(k, r); rev = Math.max(rev, r.rev); changed = true; }
+      let batch = e.data;
+      for (;;) {
+        for (const r of batch) { if (!pendingIds.has(r.id)) entries.set(r.id, r); rev = Math.max(rev, r.rev); changed = true; }
+        if (batch.length < PAGE) break;
+        const more = await sb.from("xc_live_entries").select("*").eq("event", st.event).gt("rev", rev).order("rev").limit(PAGE);
+        if (more.error) throw more.error;
+        batch = more.data;
+      }
+      for (const r of h.data) { const k = `${r.cat}|${r.heat}`; if (!queue.some((q) => q.t === "heat" && `${q.row.cat}|${q.row.heat}` === k)) heats.set(k, r); revH = Math.max(revH, r.rev); changed = true; }
       online = true;
       if (changed) renderAll(); else setSync();
     } catch (err) { online = false; setSync(); }

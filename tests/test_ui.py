@@ -676,6 +676,14 @@ def _fake_jwt(email):
     return f"{enc({'alg': 'HS256', 'typ': 'JWT'})}.{enc({'sub': 'u1', 'email': email, 'role': 'authenticated', 'exp': int(time.time()) + 3600})}.sig"
 
 
+def _page(url, rows):
+    """模擬 PostgREST：offset／limit，且每次最多回傳 1000 行（Supabase 預設 max_rows）"""
+    q = dict(p.split("=", 1) for p in url.split("?", 1)[1].split("&") if "=" in p) if "?" in url else {}
+    off = int(q.get("offset", 0))
+    lim = min(int(q.get("limit", 1000)), 1000)
+    return rows[off:off + lim]
+
+
 @pytest.fixture()
 def live(browser, base_url):
     ctx = browser.new_context(viewport={"width": 375, "height": 812}, device_scale_factor=2, is_mobile=True, has_touch=True, locale="zh-HK")
@@ -725,7 +733,9 @@ def live(browser, base_url):
             db["roster_calls"] = db.get("roster_calls", 0) + 1
             return ok(route, [{"k": f"h{r['bib']}", **{k: v for k, v in r.items() if k != "bib"}} for r in roster])
         if "/rest/v1/xc_live_roster" in u:
-            return ok(route, roster)
+            db.setdefault("roster_q", []).append(u)
+            rows = sorted(db.get("roster_big") or roster, key=lambda r: r["bib"])
+            return ok(route, _page(u, rows))
         if "/rpc/xc_live_cert_cats" in u:
             cats = {}
             for r in db["cert"].values():
@@ -745,7 +755,8 @@ def live(browser, base_url):
                 store = db["entries" if key else "heats"]
                 if req.method == "GET":
                     since = int(u.split("rev=gt.")[1].split("&")[0]) if "rev=gt." in u else 0
-                    return ok(route, sorted((r for r in store.values() if r["rev"] > since), key=lambda r: r["rev"]))
+                    db.setdefault("get_q", []).append((table, since))
+                    return ok(route, _page(u, sorted((r for r in store.values() if r["rev"] > since), key=lambda r: r["rev"])))
                 rows = json.loads(req.post_data)
                 for r in rows if isinstance(rows, list) else [rows]:
                     k = r[key] if key else f"{r['cat']}|{r['heat']}"
@@ -796,6 +807,30 @@ def _login_ma(page):
 
 def _passes(page, bib):
     return sorted((r for r in page.db["entries"].values() if r.get("bib") == bib and not r.get("deleted") and not r.get("dns")), key=lambda r: r["at_ms"])
+
+
+def test_live_admin_reads_past_1000_rows(live):
+    """Supabase 每次最多回傳 1000 行：名單及終點紀錄要分批讀；分組（heats）較新的 rev 不可令未讀的紀錄被跳過"""
+    page = live
+    extra = [{"bib": 3000 + i, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": None, "seq": None} for i in range(1100)]
+    page.db["roster_big"] = extra + [  # 原有 8 人
+        {"bib": 1002, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": "測試甲", "seq": 4},
+        {"bib": 1012, "cat": "MA", "heat": None, "abbr": "HK", "pid": None, "name": "測試乙", "seq": 1}]
+    t0 = int(time.time() * 1000) - 3_600_000
+    for i in range(1198):   # 已刪除的舊紀錄，填滿第一批
+        page.db["entries"][f"x{i}"] = {"id": f"x{i}", "event": "test", "cat": "MA", "heat": 1, "bib": 3000 + i % 1100, "at_ms": t0 + 600_000 + i, "seq": 1,
+                                       "abbr": "HK", "pid": None, "name": None, "fin": False, "deleted": True, "rev": next(page.db["rev"])}
+    for i, (bib, sec) in enumerate([(1002, 1200), (1012, 1250)], 1):   # 第 1199、1200 筆：兩人衝線
+        page.db["entries"][f"c{i}"] = {"id": f"c{i}", "event": "test", "cat": "MA", "heat": 1, "bib": bib, "at_ms": t0 + sec * 1000, "seq": i,
+                                       "abbr": "HK", "pid": None, "name": None, "fin": True, "deleted": False, "rev": next(page.db["rev"])}
+    page.db["heats"]["MA|1"] = {"event": "test", "cat": "MA", "heat": 1, "start_ms": t0, "status": "done", "rev": next(page.db["rev"])}
+    _login_ma(page)
+    _synced(page)
+    expect(page.locator("#sync")).to_contain_text("名單 1102")
+    assert any("offset=1000" in q for q in page.db["roster_q"])
+    page.click("#certBtn")
+    expect(page.locator("#sheet")).to_contain_text("完賽 2 人")
+    assert ("xc_live_entries", 1000) in page.db["get_q"]
 
 
 def test_live_admin_cert_release(live):
