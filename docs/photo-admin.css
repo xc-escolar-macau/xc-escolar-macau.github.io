@@ -30,7 +30,11 @@
 .rv { font-style: normal; color: var(--accent); }
 .empty { grid-column: 1 / -1; text-align: center; padding: 24px 0; }
 
-dialog .big { width: 100%; max-height: 52vh; object-fit: contain; border-radius: 12px; background: #000; }
+dialog .big { width: 100%; max-height: 52vh; object-fit: contain; border-radius: 12px; background: #000; display: block; }
+.big-wrap { border-radius: 12px; background: #000; cursor: zoom-in; }
+.big-wrap.z { max-height: 56vh; overflow: auto; overscroll-behavior: contain; cursor: zoom-out; }
+.big-wrap.z .big { width: 300%; max-width: none; max-height: none; border-radius: 0; }
+.more-btn { grid-column: 1 / -1; min-height: 44px; }
 dialog p { margin: 0; font-size: 13px; }
 .who-list { display: grid; gap: 4px; font-size: 14px; }
 .who-list small { color: var(--muted); }

@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 from playwright.sync_api import expect
 
-from test_ui import _fake_jwt, go, no_hscroll   # base_url、browser 來自 conftest.py
+from test_ui import _fake_jwt, _page, go, no_hscroll   # base_url、browser 來自 conftest.py
 
 CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "*", "Access-Control-Expose-Headers": "*"}
 MO = timezone(timedelta(hours=8))
@@ -178,7 +178,8 @@ def adm(browser, base_url):
         if db.get("offline"):   # 模擬斷網（Playwright 的 set_offline 不影響已攔截的請求）
             return route.abort("internetdisconnected")
         if "/rest/v1/xc_live_roster" in u:
-            return ok(route, roster)
+            db.setdefault("roster_q", []).append(u)
+            return ok(route, _page(u, sorted(roster + db.get("roster_extra", []), key=lambda r: r["bib"])))
         if "/storage/v1/object/public/xc-photos/" in u:
             path = u.split("/object/public/xc-photos/")[1]
             body = db["files"].get(path)
@@ -214,7 +215,7 @@ def adm(browser, base_url):
         if "/rest/v1/xc_photos" in u:
             if req.method == "GET":
                 since = int(u.split("rev=gt.")[1].split("&")[0]) if "rev=gt." in u else 0
-                return ok(route, sorted((r for r in db["photos"].values() if r["rev"] > since), key=lambda r: r["rev"]))
+                return ok(route, _page(u, sorted((r for r in db["photos"].values() if r["rev"] > since), key=lambda r: r["rev"])))
             if req.method == "POST":
                 rows = json.loads(req.post_data)
                 for r in rows if isinstance(rows, list) else [rows]:
@@ -492,6 +493,50 @@ def test_photo_admin_manual_tag_hints_and_next(adm, tmp_path):
     assert page.db["photos"][second["id"]]["bibs"] == [24]
     expect(page.locator("#sheet")).to_be_hidden()        # 已是最後一張
     expect(page.locator("#nApproved")).to_have_text("2")
+    no_hscroll(page)
+
+
+def test_photo_admin_many_photos_paged(adm):
+    """相片多時（負荷測試：1,500 張待標會令手機卡死）：紀錄及名單分批讀（每批 1000 行）；格內只畫 60 張＋「顯示更多」；批准後仍跳到下一張"""
+    page = adm
+    page.db["ai"] = False
+    page.db["roster_extra"] = [{"bib": 2000 + i, "cat": "MA", "heat": 1, "abbr": "X", "name": f"測試{i}"} for i in range(1100)]
+    base = int(datetime(2026, 11, 29, 9, 0, tzinfo=MO).timestamp() * 1000)
+    for i in range(1250):
+        pid = f"00000000-0000-4000-8000-{i:012d}"
+        page.db["photos"][pid] = {"id": pid, "event": "48", "full_path": f"48/{pid}.webp", "thumb_path": f"48/{pid}_t.webp", "w": 1600, "h": 1067,
+                                  "taken_ms": base + i * 5000, "taken_src": "exif", "camera": None, "clock_off_s": None, "src_key": f"k{i}",
+                                  "ai_bibs": None, "ai_unsure": None, "bibs": [], "status": "pending", "reason": "未標號碼布", "reviewed": False,
+                                  "created_at": "2026-11-29T00:00:00Z", "rev": next(page.db["rev"])}
+        if i < 2:
+            page.db["files"][f"48/{pid}.webp"] = _webp()
+    _login(page)
+    expect(page.locator("#nPending")).to_have_text("1250")
+    expect(page.locator("#sync")).to_contain_text("名單 1103")
+    assert any("offset=1000" in q for q in page.db["roster_q"])
+    cards = page.locator("#grid .card[data-id]")
+    expect(cards).to_have_count(60)
+    expect(page.locator("#moreBtn")).to_contain_text("尚有 1190 張")
+    page.click("#moreBtn")
+    expect(cards).to_have_count(120)
+    page.click(".tabs [data-tab='approved']"); page.click(".tabs [data-tab='pending']")
+    expect(cards).to_have_count(60)                       # 轉分頁後回到 60 張
+    first = "00000000-0000-4000-8000-000000000000"
+    cards.first.click()
+    page.fill("#bibsIn", "2005")
+    page.press("#bibsIn", "Enter")
+    _until(page, lambda: page.db["photos"][first]["status"] == "approved")
+    expect(page.locator("#sheet .big")).to_have_attribute("src", re.compile("000000000001"))
+    expect(page.locator("#nPending")).to_have_text("1249")
+    # 放大看號碼布：按一下放大三倍並可捲動，再按還原
+    wrap = page.locator("#bigWrap")
+    wrap.click(position={"x": 200, "y": 60})
+    expect(wrap).to_have_class(re.compile(r"(^|\s)z(\s|$)"))
+    ratio = page.evaluate("document.querySelector('#bigWrap img').offsetWidth / document.querySelector('#bigWrap').clientWidth")
+    assert ratio > 2.9, ratio
+    assert page.evaluate("document.querySelector('#bigWrap').scrollLeft") > 0
+    wrap.click()
+    expect(wrap).not_to_have_class(re.compile(r"(^|\s)z(\s|$)"))
     no_hscroll(page)
 
 

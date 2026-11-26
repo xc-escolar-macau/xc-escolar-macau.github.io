@@ -210,20 +210,37 @@
 
   /* ---------- 伺服器紀錄 ---------- */
   function mergePhoto(r) { if (photos.has(r.id)) photos.set(r.id, { ...photos.get(r.id), ...r }); }  // 只更新已載入的紀錄；新紀錄由 pull 取得完整資料
+  // Supabase（PostgREST）每次最多回傳 1000 行：相片紀錄、名單都分批讀完
+  const PAGE = 1000;
+  let pulling = false;
   async function pull(full) {
-    if (full) { rev = 0; photos.clear(); }
-    const { data, error } = await sb.from("xc_photos").select("id,event,full_path,thumb_path,w,h,taken_ms,taken_src,camera,clock_off_s,src_key,ai_bibs,ai_unsure,bibs,status,reason,reviewed,created_at,rev")
-      .eq("event", st.event).gt("rev", rev).order("rev").limit(1000);
-    if (error) { online = false; setSync(); return; }
-    online = true;
-    for (const r of data) { photos.set(r.id, r); rev = Math.max(rev, r.rev); }
-    if (data.length || full) renderAll(); else setSync();
+    if (pulling && !full) return;
+    pulling = true;
+    try {
+      if (full) { rev = 0; photos.clear(); }
+      const ev = st.event;
+      let got = 0;
+      for (;;) {
+        const { data, error } = await sb.from("xc_photos").select("id,event,full_path,thumb_path,w,h,taken_ms,taken_src,camera,clock_off_s,src_key,ai_bibs,ai_unsure,bibs,status,reason,reviewed,created_at,rev")
+          .eq("event", ev).gt("rev", rev).order("rev").limit(PAGE);
+        if (ev !== st.event) return;   // 讀取途中轉了資料（正式／演練）
+        if (error) { online = false; setSync(); return; }
+        online = true;
+        for (const r of data) { photos.set(r.id, r); rev = Math.max(rev, r.rev); }
+        got += data.length;
+        if (data.length < PAGE) break;
+      }
+      if (got || full) renderAll(); else setSync();
+    } finally { pulling = false; }
   }
   async function loadRoster() {
-    ROSTER.clear();
-    const { data, error } = await sb.from("xc_live_roster").select("bib,cat,heat,abbr,name").eq("event", st.event).limit(5000);
-    ROSTER_HEATS.clear();
-    if (!error) for (const r of data) { ROSTER.set(r.bib, r); ROSTER_HEATS.set(r.cat, Math.max(ROSTER_HEATS.get(r.cat) || 1, r.heat || 1)); }
+    ROSTER.clear(); ROSTER_HEATS.clear();
+    for (let i = 0; ; i += PAGE) {
+      const { data, error } = await sb.from("xc_live_roster").select("bib,cat,heat,abbr,name").eq("event", st.event).order("bib").range(i, i + PAGE - 1);
+      if (error) break;
+      for (const r of data) { ROSTER.set(r.bib, r); ROSTER_HEATS.set(r.cat, Math.max(ROSTER_HEATS.get(r.cat) || 1, r.heat || 1)); }
+      if (data.length < PAGE) break;
+    }
   }
   const pubUrl = (path) => `${SITE.views.url}/storage/v1/object/public/${BUCKET}/${path}`;
   const who = (bib) => {
@@ -248,6 +265,10 @@
     msg.hidden = !AI() || !(waitQ || noKey);
     msg.textContent = noKey ? "Gemini 金鑰未設定：相片照樣上載，設定後自動辨識。" : waitQ ? `Gemini 配額已滿，約 ${Math.ceil((quotaUntil - Date.now()) / 1000)} 秒後繼續辨識（免費層每分鐘次數有限）。` : "";
   }
+  // 格內只畫頭 SHOW 張（相片多時整格重畫會令手機卡住）；「顯示更多」每次加 SHOW 張
+  const SHOW = 60;
+  let shown = SHOW;
+  const moreBtn = (total) => total > shown ? `<button type="button" class="ghost more-btn" id="moreBtn">顯示更多（尚有 ${total - shown} 張）</button>` : "";
   function renderAll() {
     const list = [...photos.values()].filter((p) => p.status !== "removed");
     const pend = list.filter((p) => p.status === "pending" || p.status === "uploaded");
@@ -258,19 +279,19 @@
     if (st.tab === "queue") {
       const qs = queue.filter((q) => q.event === st.event);
       note.textContent = qs.length ? "壓縮後的相片暫存在本機，上載及辨識完成後自動清走。" : "本機沒有待上載的相片。";
-      g.innerHTML = qs.map((q) => `<div class="card q"><img alt="" src="${q.thumbUrl || (q.thumbUrl = URL.createObjectURL(q.thumb))}"><div class="meta"><b>${esc({ ready: "等候上載", uploaded: "已上載檔案", row: AI() ? "辨識中" : "寫入紀錄" }[q.stage] || q.stage)}</b><small>${esc(q.err || "")}</small><small>${when(q)}</small></div></div>`).join("");
+      g.innerHTML = qs.slice(0, shown).map((q) => `<div class="card q"><img alt="" src="${q.thumbUrl || (q.thumbUrl = URL.createObjectURL(q.thumb))}"><div class="meta"><b>${esc({ ready: "等候上載", uploaded: "已上載檔案", row: AI() ? "辨識中" : "寫入紀錄" }[q.stage] || q.stage)}</b><small>${esc(q.err || "")}</small><small>${when(q)}</small></div></div>`).join("") + moreBtn(qs.length);
       setSync(); return;
     }
     const show = st.tab === "approved" ? appr.sort(byTimeDesc) : pend.sort(byTimeAsc);
     note.textContent = st.tab === "approved" ? "已公開：運動員可用號碼布＋姓名查到。賽後請逐張再看一次（已覆核者標 ✓）。"
       : AI() ? "待覆核：未公開。改正號碼布後按「批准公開」，或移除。" : "待標號碼布：按拍攝時間排列。逐張輸入相中號碼布後「批准公開」，會自動跳到下一張。";
-    g.innerHTML = show.length ? show.map((p) => `<button class="card" type="button" data-id="${esc(p.id)}">
+    g.innerHTML = show.length ? show.slice(0, shown).map((p) => `<button class="card" type="button" data-id="${esc(p.id)}">
         <img alt="" loading="lazy" src="${esc(pubUrl(p.thumb_path))}">
         <div class="meta">
           <b>${(p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []).map((n) => esc(n)).join("、") || (AI() ? "讀不到號碼布" : "未標號碼布")}${p.reviewed ? ' <i class="rv">✓</i>' : ""}</b>
           ${p.status === "uploaded" ? (AI() ? "<small>辨識中……</small>" : "") : p.reason && p.reason !== "未標號碼布" ? `<small class="why">${esc(p.reason)}</small>` : ""}
           <small>${when(p)}</small>
-        </div></button>`).join("") : `<p class="muted empty">${st.tab === "approved" ? "未有已公開的相片。" : "沒有待覆核的相片。"}</p>`;
+        </div></button>`).join("") + moreBtn(show.length) : `<p class="muted empty">${st.tab === "approved" ? "未有已公開的相片。" : "沒有待覆核的相片。"}</p>`;
     setSync();
   }
 
@@ -281,8 +302,8 @@
     const f = $("#sheetBody");
     const start = (p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []);
     f.innerHTML = `<h2>覆核相片</h2>
-      <img class="big" alt="" src="${esc(pubUrl(p.full_path))}">
-      <p class="muted">拍攝 ${when(p)}${p.camera ? ` · ${esc(p.camera)}` : ""}${p.clock_off_s ? `（相機${esc(fmtOff(p.clock_off_s))}）` : ""}${AI() ? ` · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}` : ""}</p>
+      <div class="big-wrap" id="bigWrap" title="按相片放大／縮小"><img class="big" alt="相片（按一下放大，看清號碼布）" src="${esc(pubUrl(p.full_path))}"></div>
+      <p class="muted">按相片放大（可拖動）· 拍攝 ${when(p)}${p.camera ? ` · ${esc(p.camera)}` : ""}${p.clock_off_s ? `（相機${esc(fmtOff(p.clock_off_s))}）` : ""}${AI() ? ` · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}` : ""}</p>
       ${p.reason && p.reason !== "未標號碼布" ? `<p class="why">${esc(p.reason)}</p>` : ""}
       <div id="hints" class="hints" aria-live="polite"></div>
       <label>相中號碼布（以空格或逗號分隔；按 Enter＝批准公開）<input id="bibsIn" inputmode="numeric" autocomplete="off" value="${esc(start.join(" "))}"></label>
@@ -295,6 +316,16 @@
         <button type="submit" class="ghost">關閉</button>
       </div>
       <p id="sheetMsg" class="msg" role="alert"></p>`;
+    // 放大：真實比賽相片的號碼布很小（1600px 相片約 40px），手機上要放大三倍才看得清；以按下位置為中心
+    $("#bigWrap").onclick = (e) => {
+      const wrap = $("#bigWrap"), img = wrap.querySelector("img"), r = img.getBoundingClientRect();
+      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      if (!wrap.classList.toggle("z")) return;
+      requestAnimationFrame(() => {
+        wrap.scrollLeft = fx * img.offsetWidth - wrap.clientWidth / 2;
+        wrap.scrollTop = fy * img.offsetHeight - wrap.clientHeight / 2;
+      });
+    };
     // 提示：拍攝時間前後經過終點的號碼布＋該時段在跑道上的組別；已輸入號碼布逐個檢查是否在跑道上
     let offCourse = new Set(), hintSeq = 0, hintTimer = 0;
     const loadHints = async () => {
@@ -452,7 +483,7 @@
     $("#loginBtn").onclick = login;
     $("#pw").onkeydown = (e) => { if (e.key === "Enter") login(); };
     $("#logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
-    $("#event").onchange = async () => { st.event = $("#event").value; save(); await loadRoster(); await pull(true); };
+    $("#event").onchange = async () => { st.event = $("#event").value; save(); shown = SHOW; await loadRoster(); await pull(true); };
     $("#files").onchange = (e) => prepare(e.target.files);
     $("#clockBtn").onclick = openClock;
     $("#clockFile").onchange = (e) => clockPick(e.target.files[0]);
@@ -461,8 +492,11 @@
     $("#clockList").onclick = (e) => { const b = e.target.closest("[data-clear]"); if (!b) return; delete st.clock[b.dataset.clear]; save(); renderClockList(); clockLabel(); };
     $("#clock").addEventListener("close", () => clearInterval(clockTimer));
     clockLabel();
-    document.querySelectorAll(".tabs button").forEach((b) => { b.onclick = () => { st.tab = b.dataset.tab; save(); renderAll(); }; });
-    $("#grid").onclick = (e) => { const c = e.target.closest(".card[data-id]"); if (c) openSheet(c.dataset.id); };
+    document.querySelectorAll(".tabs button").forEach((b) => { b.onclick = () => { st.tab = b.dataset.tab; save(); shown = SHOW; renderAll(); }; });
+    $("#grid").onclick = (e) => {
+      if (e.target.closest("#moreBtn")) { shown += SHOW; renderAll(); return; }
+      const c = e.target.closest(".card[data-id]"); if (c) openSheet(c.dataset.id);
+    };
     window.addEventListener("online", () => { online = true; for (const q of queue) q.next_at = 0; work(); });
     const { data } = await sb.auth.getSession();
     if (data && data.session) await afterLogin();
