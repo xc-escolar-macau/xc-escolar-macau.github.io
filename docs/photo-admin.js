@@ -1,7 +1,8 @@
 /* 相片上載（工作人員用）：手機揀相上載；預設人手標號碼布（免費方案，賽後標），site.json 設 photo_ai: true 才改用 Gemini 辨識
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
    - 揀相片 → 手機內壓縮成長邊 1600px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
-   - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心，500 張約 2–3 分鐘）：大圖照原檔上載、只移除 EXIF，不壓縮第二次
+   - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心）：大圖照原檔上載、只移除 EXIF，不壓縮第二次
+   - photo_prep.py 亦在本機掃描號碼布（ocr=）：人手標時預先填入名單內、拍攝時段在跑道上的號碼；不肯定的列作「可能」；仍須工作人員確認才公開
    - 壓縮後的檔案存於本機 IndexedDB 佇列：斷網、重新整理頁面都不會遺失，恢復後自動續傳
    - 每張：上載兩個檔 → 寫入 xc_photos → 呼叫 Edge Function xc-photo-bibs 辨識並判斷是否自動公開
    - Gemini 配額用完（429）時按建議時間稍後重試
@@ -15,7 +16,7 @@
   const store = { get(k, fb) { try { const v = localStorage.getItem(k); return v == null ? fb : JSON.parse(v); } catch (e) { return fb; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 無痕模式 */ } } };
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 3 | 8)).toString(16); }));
   const catLabel = (c) => `${c[0] === "M" ? "男" : "女"}${c[1]}`;
-  const BUCKET = "xc-photos", FULL = 1600, THUMB = 400, PARALLEL = 2;
+  const BUCKET = "xc-photos", FULL = 1600, THUMB = 400, PARALLEL = 2, OCR_SURE = 80;
 
   let sb = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map(), ROSTER_HEATS = new Map();
   const st = Object.assign({ event: "48", tab: "pending" }, store.get("xc-photo-state", {}));
@@ -92,8 +93,10 @@
     const tag = (o, k) => (o[k] ? str(o[k].val, o[k].cnt).trim() : "");
     const make = tag(ifd0, 0x010F), model = tag(ifd0, 0x0110);
     const cam = (model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`).trim().slice(0, 60);
-    const pm = tag(ifd0, 0x010E).match(/^xc-prep v\d+ src=(\d+)/);   // photo_prep.py 的標記：原檔大小
-    const prep = pm ? { src: Number(pm[1]) } : null;
+    // photo_prep.py 的標記：原檔大小；ocr=號碼:信心,…＝電腦掃描號碼布的結果（沒有 ocr＝沒有掃描）
+    const desc = tag(ifd0, 0x010E), pm = desc.match(/^xc-prep v\d+ src=(\d+)/), om = desc.match(/ ocr=([\d:,]*)/);
+    const ocr = om ? om[1].split(",").map((x) => x.split(":").map(Number)).filter(([b, c]) => b >= 1 && b <= 99999 && c >= 0) : null;
+    const prep = pm ? { src: Number(pm[1]), ocr } : null;
     if (!ifd0[0x8769]) return null;
     const ex = ifd(ifd0[0x8769].raw);
     const d = ex[0x9003] || ex[0x9004];
@@ -165,7 +168,7 @@
         const item = {
           id, event: ev, name: f.name, full: full.blob, thumb: thumb.blob, ext: full.ext, text: thumb.ext, w: full.w, h: full.h,
           taken_ms: taken, taken_src: exif ? "exif" : f.lastModified ? "file" : "upload",
-          camera: exif ? exif.cam || null : null, clock_off_s: off || null, src_key: key,
+          camera: exif ? exif.cam || null : null, clock_off_s: off || null, src_key: key, ocr: (exif && exif.prep && exif.prep.ocr) || null,
           stage: "ready", tries: 0, next_at: 0, err: "", added: Date.now(),
         };
         await IDB.put(item); queue.push(item);
@@ -212,6 +215,11 @@
         const row = { id: q.id, event: q.event, full_path: p.full, thumb_path: p.thumb, w: q.w, h: q.h, taken_ms: q.taken_ms, taken_src: q.taken_src,
           camera: q.camera || null, clock_off_s: q.clock_off_s || null, src_key: q.src_key || null };
         if (!AI()) Object.assign(row, { status: "pending", reason: "未標號碼布" });
+        // 電腦掃描號碼布（photo_prep.py）：只作建議，存於 ai_bibs（信心 ≥ OCR_SURE）及 ai_unsure；工作人員確認後才寫入 bibs 公開
+        if (!AI() && q.ocr) {
+          const asc = (a) => [...new Set(a)].sort((x, y) => x - y);
+          Object.assign(row, { ai_bibs: asc(q.ocr.filter(([, c]) => c >= OCR_SURE).map(([b]) => b)), ai_unsure: asc(q.ocr.filter(([, c]) => c < OCR_SURE).map(([b]) => b)) });
+        }
         const { error } = await sb.from("xc_photos").upsert(row, { onConflict: "id", ignoreDuplicates: true });
         if (error) throw error;
         q.stage = "row"; q.err = ""; await IDB.put(q);
@@ -325,7 +333,7 @@
     g.innerHTML = show.length ? show.slice(0, shown).map((p) => `<button class="card" type="button" data-id="${esc(p.id)}">
         <img alt="" loading="lazy" src="${esc(pubUrl(p.thumb_path))}">
         <div class="meta">
-          <b>${(p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []).map((n) => esc(n)).join("、") || (AI() ? "讀不到號碼布" : "未標號碼布")}${p.reviewed ? ' <i class="rv">✓</i>' : ""}</b>
+          <b>${!AI() && !(p.bibs && p.bibs.length) && (p.ai_bibs || []).length ? "建議 " : ""}${(p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []).map((n) => esc(n)).join("、") || (AI() ? "讀不到號碼布" : "未標號碼布")}${p.reviewed ? ' <i class="rv">✓</i>' : ""}</b>
           ${p.status === "uploaded" ? (AI() ? "<small>辨識中……</small>" : "") : p.reason && p.reason !== "未標號碼布" ? `<small class="why">${esc(p.reason)}</small>` : ""}
           <small>${when(p)}</small>
         </div></button>`).join("") + moreBtn(show.length) : `<p class="muted empty">${st.tab === "approved" ? "未有已公開的相片。" : "沒有待覆核的相片。"}</p>`;
@@ -337,7 +345,14 @@
   function openSheet(id) {
     const p = photos.get(id); if (!p) return;
     const f = $("#sheetBody");
-    const start = (p.bibs && p.bibs.length ? p.bibs : p.ai_bibs || []);
+    // 人手標＋電腦掃描建議（photo_prep.py）：只預先填入名單內的號碼；不在名單的剔除；不肯定的列作「可能」按一下加入；
+    // 提示載入後，拍攝時段不在跑道上的建議亦自動剔除（未改動輸入前）
+    const sugg = !AI() && !(p.bibs && p.bibs.length) && ((p.ai_bibs || []).length || (p.ai_unsure || []).length) ? {
+      unsure: (p.ai_unsure || []).filter((n) => ROSTER.has(n) && !(p.ai_bibs || []).includes(n)),
+      out: [...(p.ai_bibs || []), ...(p.ai_unsure || [])].filter((n) => !ROSTER.has(n)).map((n) => `${n}（不在名單）`),
+    } : null;
+    let touched = false, firstHints = true, hintsReady = false;
+    const start = p.bibs && p.bibs.length ? p.bibs : sugg ? (p.ai_bibs || []).filter((n) => ROSTER.has(n)) : p.ai_bibs || [];
     f.innerHTML = `<h2>覆核相片</h2>
       <div class="big-wrap" id="bigWrap" title="按相片放大／縮小"><img class="big" alt="相片（按一下放大，看清號碼布）" src="${esc(pubUrl(p.full_path))}"></div>
       <p class="muted">按相片放大（可拖動）· 拍攝 ${when(p)}${p.camera ? ` · ${esc(p.camera)}` : ""}${p.clock_off_s ? `（相機${esc(fmtOff(p.clock_off_s))}）` : ""}${AI() ? ` · AI 讀出：${(p.ai_bibs || []).join("、") || "無"}${(p.ai_unsure || []).length ? `（不確定：${p.ai_unsure.join("、")}）` : ""}` : ""}</p>
@@ -367,14 +382,29 @@
     let offCourse = new Set(), hintSeq = 0, hintTimer = 0;
     const loadHints = async () => {
       const mine = ++hintSeq, b = parseBibs($("#bibsIn").value);
-      const { data, error } = await sb.rpc("xc_photo_hints", { p_id: id, p_bibs: b });
+      const { data, error } = await sb.rpc("xc_photo_hints", { p_id: id, p_bibs: sugg ? [...new Set([...b, ...sugg.unsure])] : b });
       if (mine !== hintSeq || !$("#hints")) return;
+      hintsReady = true;
       if (error || !data) { $("#hints").innerHTML = '<p class="muted">未能載入提示（網絡）；仍可直接輸入號碼布。</p>'; return; }
       offCourse = new Set((data.check || []).filter((c) => c.on_course === false).map((c) => c.bib));
+      if (sugg && firstHints) {
+        firstHints = false;
+        const off = b.filter((n) => offCourse.has(n));
+        if (off.length && !touched) {
+          $("#bibsIn").value = b.filter((n) => !offCourse.has(n)).join(" ");
+          sugg.out.push(...off.map((n) => `${n}（該時段不在跑道上）`));
+        }
+        const offU = sugg.unsure.filter((n) => offCourse.has(n));
+        sugg.out.push(...offU.map((n) => `${n}（不肯定；該時段不在跑道上）`));
+        sugg.unsure = sugg.unsure.filter((n) => !offCourse.has(n));
+      }
+      const suggHtml = sugg ? `<p class="hint-h">電腦掃描建議（已預先填入，請對照相片核對）</p>`
+        + (sugg.unsure.length ? `<div class="near">${sugg.unsure.map((n) => `<button type="button" class="chip" data-add="${n}"><b class="num">${n}</b> ${esc((ROSTER.get(n) || {}).name || "")}<small>可能（不肯定）</small></button>`).join("")}</div>` : "")
+        + (sugg.out.length ? `<p class="muted">已剔除：${esc(sugg.out.join("、"))}</p>` : "") : "";
       const near = (data.near || []).filter((n) => ROSTER.has(n.bib));
       const dtTxt = (dt) => Math.abs(dt) < 0.5 ? "同時衝線" : dt > 0 ? `相片後 ${Math.round(dt)} 秒衝線` : `相片前 ${Math.round(-dt)} 秒衝線`;
       const cats = (data.cats || []).map((c) => `${catLabel(c.cat)}${(ROSTER_HEATS.get(c.cat) || 1) > 1 ? ` C${c.heat}` : ""}`);
-      $("#hints").innerHTML = (data.taken_ms == null ? '<p class="muted">這張相片沒有拍攝時間，未能提示。</p>' : "")
+      $("#hints").innerHTML = suggHtml + (data.taken_ms == null ? '<p class="muted">這張相片沒有拍攝時間，未能提示。</p>' : "")
         + (near.length ? `<p class="hint-h">終點紀錄：拍攝前後 20 秒經過終點（按一下加入）</p><div class="near">${near.map((n) => `<button type="button" class="chip" data-add="${n.bib}"><b class="num">${n.bib}</b> ${esc((ROSTER.get(n.bib) || {}).name || "")}<small>${dtTxt(n.dt)}${n.fin ? "" : "・中途經過"}</small></button>`).join("")}</div>` : "")
         + (data.taken_ms != null ? `<p class="muted hint-cats">此時段在跑道上：${cats.length ? esc(cats.join("、")) : "沒有組別（可能是比賽前後的相片）"}</p>` : "");
       upd(false);
@@ -386,9 +416,10 @@
       document.querySelectorAll("#hints [data-add]").forEach((x) => x.classList.toggle("on", b.includes(Number(x.dataset.add))));
       if (reload) { clearTimeout(hintTimer); hintTimer = setTimeout(loadHints, 350); }
     };
-    $("#bibsIn").oninput = () => upd();
+    $("#bibsIn").oninput = () => { touched = true; upd(); };
     $("#hints").onclick = (e) => {
       const x = e.target.closest("[data-add]"); if (!x) return;
+      touched = true;
       const b = parseBibs($("#bibsIn").value), n = Number(x.dataset.add);
       $("#bibsIn").value = (b.includes(n) ? b.filter((v) => v !== n) : [...b, n]).join(" ");
       upd();
@@ -408,6 +439,7 @@
     const approve = () => {
       const b = parseBibs($("#bibsIn").value);
       if (!b.length || b.some((n) => !ROSTER.has(n))) return;
+      if (sugg && !hintsReady) { $("#sheetMsg").textContent = "正在核對電腦建議（拍攝時段是否在跑道上），請稍候再按。"; return; }
       const off = b.filter((n) => offCourse.has(n));
       if (off.length && !confirm(`${off.join("、")} 在拍攝時段不在跑道上，確定號碼沒有看錯？`)) return;
       save2({ bibs: b, status: "approved", reviewed: true, reason: null }, true);

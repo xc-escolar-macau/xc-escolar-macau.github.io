@@ -596,3 +596,46 @@ def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
     expect(page.locator("#prep")).to_contain_text("略過 1 張（之前已上載）")
     page.wait_for_timeout(300)
     assert len(page.db["photos"]) == 1
+
+
+def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):
+    """photo_prep.py 掃描號碼布（ocr=）：上載時存作建議（ai_bibs／ai_unsure，未公開）；覆核時只預先填入名單內、
+    拍攝時段在跑道上的號碼，其餘剔除並列明原因；不肯定的列作「可能」一按加入；Enter 確認才公開"""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    import photo_prep
+    page = adm
+    page.db["ai"] = False
+    _login(page)
+    src = Image.open(io.BytesIO(_jpeg(when="2026:11:29 08:10:00")))
+    ex = photo_prep.keep_exif(src.getexif(), 4321, [(405, 97), (7, 95), (999, 99), (24, 60), (26, 55)])
+    f = tmp_path / "IMG_9.webp"
+    src.convert("RGB").resize((1600, 1067)).save(f, "WEBP", quality=80, exif=ex.tobytes())
+    page.set_input_files("#files", [str(f)])
+    _until(page, lambda: len(page.db["photos"]) == 1)
+    row = next(iter(page.db["photos"].values()))
+    assert row["ai_bibs"] == [7, 405, 999] and row["ai_unsure"] == [24, 26]
+    assert row["status"] == "pending" and row["bibs"] == []          # 只是建議，未公開
+    assert b"xc-prep" not in page.db["files"][row["full_path"]]      # 公開的大圖不帶掃描結果
+    card = page.locator(".card[data-id]")
+    expect(card).to_contain_text("建議 7、405、999")
+    card.click()
+    # 7 在名單但該時段不在跑道上（測試假資料：7 號不在跑道上）→ 提示載入後自動剔除；999、26 不在名單
+    expect(page.locator("#bibsIn")).to_have_value("405")
+    expect(page.locator("#hints")).to_contain_text("電腦掃描建議")
+    expect(page.locator("#hints")).to_contain_text("999（不在名單）")
+    expect(page.locator("#hints")).to_contain_text("7（該時段不在跑道上）")
+    expect(page.locator("#hints")).to_contain_text("26（不在名單）")
+    assert 24 in page.db["hints"][-1]["p_bibs"]                       # 不肯定的建議亦核對是否在跑道上
+    maybe = page.locator("#hints [data-add='24']")
+    expect(maybe).to_contain_text("可能（不肯定）")
+    expect(maybe).to_contain_text("李蕙伃")
+    maybe.click()
+    expect(page.locator("#bibsIn")).to_have_value("405 24")
+    page.press("#bibsIn", "Enter")
+    _until(page, lambda: page.db["photos"][row["id"]]["status"] == "approved")
+    assert page.db["photos"][row["id"]]["bibs"] == [24, 405]
+    expect(page.locator(".card[data-id]")).to_have_count(0)
+    page.locator(".tabs button[data-tab='approved']").click()
+    expect(page.locator(".card[data-id]")).to_contain_text("24、405")
+    expect(page.locator(".card[data-id]")).not_to_contain_text("建議")
