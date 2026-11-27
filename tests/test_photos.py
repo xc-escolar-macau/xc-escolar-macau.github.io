@@ -340,7 +340,12 @@ def test_photo_admin_review_approve_and_remove(adm, tmp_path):
     expect(page.locator("#approve")).to_be_disabled()
     page.fill("#bibsIn", "7 24")
     expect(page.locator("#whoList")).to_contain_text("羅焯饒")
-    page.click("#approve")
+    expect(page.locator("#whoList .who-warn")).to_have_count(1)   # 7 號該時段不在跑道上
+    page.click("#approve")                                         # 第一次：頁面內提示，不公開
+    expect(page.locator("#approve")).to_have_text("仍然公開（再按一次）")
+    expect(page.locator("#sheetMsg")).to_contain_text("7 在拍攝時段不在跑道上")
+    assert page.db["photos"][pid]["status"] != "approved"
+    page.click("#approve")                                         # 第二次（8 秒內）：公開
     _until(page, lambda: page.db["photos"][pid]["status"] == "approved")
     assert page.db["photos"][pid]["bibs"] == [7, 24] and page.db["photos"][pid]["reviewed"] is True
     page.click(".tabs [data-tab='approved']")
@@ -514,10 +519,14 @@ def test_photo_admin_manual_tag_hints_and_next(adm, tmp_path):
     page.fill("#bibsIn", "405 7")
     expect(page.locator("#whoList")).to_contain_text("該時段不在跑道上")
     expect(page.locator("#whoList .who-warn")).to_have_count(1)
-    page.click("#approve")
+    page.press("#bibsIn", "Enter")                                 # 第一次：頁面內提示（不用彈出視窗）
+    expect(page.locator("#sheetMsg")).to_contain_text("7 在拍攝時段不在跑道上")
+    page.wait_for_timeout(200)
+    assert page.db["photos"][first["id"]]["status"] != "approved"
+    page.press("#bibsIn", "Enter")                                 # 再按 Enter：公開
     _until(page, lambda: page.db["photos"][first["id"]]["status"] == "approved")
     assert page.db["photos"][first["id"]]["bibs"] == [7, 405] and page.db["photos"][first["id"]]["reviewed"] is True
-    assert any("不在跑道上" in m for m in page.dialogs)
+    assert not page.dialogs                                        # 整個流程沒有彈出視窗
     # 自動開下一張
     expect(page.locator("#sheet")).to_be_visible()
     expect(page.locator("#sheet .big")).to_have_attribute("src", re.compile(second["full_path"]))
@@ -568,7 +577,7 @@ def test_photo_admin_many_photos_paged(adm):
     expect(wrap).to_have_class(re.compile(r"(^|\s)z(\s|$)"))
     ratio = page.evaluate("document.querySelector('#bigWrap img').offsetWidth / document.querySelector('#bigWrap').clientWidth")
     assert ratio > 2.9, ratio
-    assert page.evaluate("document.querySelector('#bigWrap').scrollLeft") > 0
+    page.wait_for_function("document.querySelector('#bigWrap').scrollLeft > 0", timeout=5000)   # 下一格畫面才捲動到按下的位置
     wrap.click()
     expect(wrap).not_to_have_class(re.compile(r"(^|\s)z(\s|$)"))
     no_hscroll(page)

@@ -479,10 +479,20 @@
       const b = parseBibs($("#bibsIn").value);
       if (!b.length || b.some((n) => !ROSTER.has(n))) return;
       if (sugg && !hintsReady) { $("#sheetMsg").textContent = "正在核對電腦建議（拍攝時段是否在跑道上），請稍候再按。"; return; }
+      // 有號碼布在拍攝時段不在跑道上：頁面內提示，8 秒內再按一次（或再按 Enter）才公開（不用 confirm 彈出視窗）
       const off = b.filter((n) => offCourse.has(n));
-      if (off.length && !confirm(`${off.join("、")} 在拍攝時段不在跑道上，確定號碼沒有看錯？`)) return;
+      const key = b.join(",");
+      if (off.length && !(offOk.key === key && Date.now() - offOk.at <= 8000)) {
+        offOk = { key, at: Date.now() };
+        $("#approve").textContent = "仍然公開（再按一次）";
+        $("#sheetMsg").textContent = `${off.join("、")} 在拍攝時段不在跑道上，請再核對號碼；確定沒有看錯，8 秒內再按一次。`;
+        setTimeout(() => { if ($("#approve") && Date.now() - offOk.at >= 8000) { $("#approve").textContent = "批准公開"; } }, 8100);
+        return;
+      }
+      offOk = { key: "", at: 0 };
       save2({ bibs: b, status: "approved", reviewed: true, reason: null }, true);
     };
+    let offOk = { key: "", at: 0 };
     $("#approve").onclick = approve;
     $("#bibsIn").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); approve(); } };
     $("#keep").onclick = () => save2({ bibs: parseBibs($("#bibsIn").value), status: "pending", reviewed: true }, true);
