@@ -94,13 +94,16 @@
     const ifd0 = ifd(u32(4));
     const tag = (o, k) => (o[k] ? str(o[k].val, o[k].cnt).trim() : "");
     const make = tag(ifd0, 0x010F), model = tag(ifd0, 0x0110);
-    const cam = (model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`).trim().slice(0, 60);
+    const base = (model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`).trim().slice(0, 60);
     // photo_prep.py 的標記：原檔大小；ocr=號碼:信心,…＝電腦掃描號碼布的結果（沒有 ocr＝沒有掃描）
     const desc = tag(ifd0, 0x010E), pm = desc.match(/^xc-prep v\d+ src=(\d+)/), om = desc.match(/ ocr=([\d:,]*)/);
     const ocr = om ? om[1].split(",").map((x) => x.split(":").map(Number)).filter(([b, c]) => b >= 1 && b <= 99999 && c >= 0) : null;
     const prep = pm ? { src: Number(pm[1]), ocr } : null;
     if (!ifd0[0x8769]) return null;
     const ex = ifd(ifd0[0x8769].raw);
+    // 機身序號（BodySerialNumber）：同型號的兩部相機各自校正時間；只取尾 6 位
+    const sn = tag(ex, 0xA431).replace(/[^A-Za-z0-9]/g, "").slice(-6);
+    const cam = base && sn ? `${base} #${sn}` : base;
     const d = ex[0x9003] || ex[0x9004];
     if (!d) return null;
     const m = str(d.val, d.cnt).match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
@@ -112,10 +115,18 @@
     return Number.isFinite(ms) ? { ms, cam, prep } : null;
   }
 
-  /* ---------- 相機時間校正：每部相機一個誤差（秒，正數＝相機快），只套用於該型號相片的 EXIF 時間 ---------- */
+  /* ---------- 相機時間校正：每部相機一個誤差（秒，正數＝相機快），只套用於該相機相片的 EXIF 時間
+     相機名稱＝牌子＋型號（有機身序號時加「 #序號尾 6 位」）；校正值存資料庫 xc_photo_clock，所有上載裝置共用
+     舊的校正只有型號（沒有序號）：序號相機找不到自己的校正時，沿用同型號的校正 ---------- */
   const CAM_NONE = "（未知型號）";
   const camName = (cam) => cam || CAM_NONE;
-  const clockOff = (cam) => (st.clock && Number(st.clock[camName(cam)])) || 0;
+  const clockKey = (cam) => {
+    const c = st.clock || {}, name = camName(cam);
+    if (name in c) return name;
+    const model = name.replace(/ #[A-Za-z0-9]+$/, "");
+    return model !== name && model in c ? model : name;
+  };
+  const clockOff = (cam) => (st.clock && Number(st.clock[clockKey(cam)])) || 0;
   const fmtOff = (s) => s === 0 ? "準確" : `${s > 0 ? "快" : "慢"} ${Math.floor(Math.abs(s) / 60) ? `${Math.floor(Math.abs(s) / 60)} 分 ` : ""}${Math.abs(s) % 60} 秒`;
 
   /* ---------- 略過已上載：同一張相片（拍攝時間＋檔案大小）不會上載兩次 ---------- */
@@ -553,29 +564,51 @@
     const n = Object.keys(st.clock || {}).length;
     $("#clockBtn").textContent = n ? `相機時間：已校正 ${n} 部` : "相機時間：未校正";
   }
+  // 已上載的相片中，屬於這個校正（相機）而所用誤差與現在不同的：可按「更正已上載」重新計算拍攝時間
+  function staleFor(name) {
+    const off = Number((st.clock || {})[name]) || 0;
+    return [...photos.values()].filter((p) => p.event === st.event && p.taken_src === "exif" && p.status !== "removed"
+      && clockKey(p.camera) === name && (Number(p.clock_off_s) || 0) !== off);
+  }
   function renderClockList() {
     const c = st.clock || {};
     const names = Object.keys(c);
-    $("#clockList").innerHTML = names.length ? names.map((k) => `<li><span><b>${esc(k)}</b> ${esc(fmtOff(c[k]))}</span><button type="button" class="ghost" data-clear="${esc(k)}">清除</button></li>`).join("")
-      : '<li class="muted">未有已校正的相機。手機本身影的相片不用校正。</li>';
+    $("#clockList").innerHTML = names.length ? names.map((k) => {
+      const n = staleFor(k).length;
+      return `<li><span><b>${esc(k)}</b> ${esc(fmtOff(c[k]))}</span>${n ? `<button type="button" class="primary" data-fix="${esc(k)}">更正已上載 ${n} 張</button>` : ""}<button type="button" class="ghost" data-clear="${esc(k)}">清除</button></li>`;
+    }).join("") : '<li class="muted">未有已校正的相機。手機本身影的相片不用校正。</li>';
   }
-  function openClock() {
+  // 校正值以資料庫為準（所有裝置共用）；離線時做的校正先存本機（clockPending），下次連線時補上載
+  async function loadClocks() {
+    const pend = (st.clockPending || []).filter((k) => st.clock && k in st.clock);
+    if (pend.length) {
+      const { error } = await sb.from("xc_photo_clock").upsert(pend.map((k) => ({ camera: k, off_s: Number(st.clock[k]) || 0 })), { onConflict: "camera" });
+      if (!error) { st.clockPending = []; save(); }
+    }
+    const { data, error } = await sb.from("xc_photo_clock").select("camera,off_s");
+    if (error || !data) return false;
+    const keep = Object.fromEntries((st.clockPending || []).filter((k) => st.clock && k in st.clock).map((k) => [k, st.clock[k]]));
+    st.clock = { ...Object.fromEntries(data.map((r) => [r.camera, r.off_s])), ...keep }; save();
+    return true;
+  }
+  async function openClock() {
     calib = null;
     $("#clockFile").value = ""; $("#clockSeen").value = ""; $("#clockInfo").textContent = ""; $("#clockMsg").textContent = "";
     renderClockList();
     const tick = () => { $("#clockNow").textContent = hms(Date.now()); };
     tick(); clearInterval(clockTimer); clockTimer = setInterval(tick, 200);
     $("#clock").showModal();
+    if (await loadClocks()) { renderClockList(); clockLabel(); }
   }
   async function clockPick(file) {
     calib = null; $("#clockMsg").textContent = "";
     const ex = file && await exifInfo(file);
-    if (!ex) { $("#clockInfo").textContent = "這張相片沒有拍攝時間資料，請直接用相機原檔（JPEG）。"; return; }
+    if (!ex) { $("#clockInfo").textContent = "這張相片沒有拍攝時間資料，請直接用相機原檔（JPEG；經 WhatsApp 傳送會失去拍攝時間）。"; return; }
     calib = ex;
     $("#clockInfo").textContent = `相機：${camName(ex.cam)} · 相片記錄的時間 ${hms(ex.ms)}`;
     $("#clockSeen").focus();
   }
-  function clockApply() {
+  async function clockApply() {
     const msg = $("#clockMsg");
     if (!calib) { msg.textContent = "請先揀相機影的時鐘相片。"; return; }
     const seen = parseHms($("#clockSeen").value);
@@ -586,7 +619,34 @@
     while (diff < -DAY / 2) diff += DAY;
     const off = Math.round(diff / 1000), name = camName(calib.cam);
     st.clock = { ...(st.clock || {}), [name]: off }; save();
-    msg.textContent = `已套用：${name} ${fmtOff(off)}。之後揀的相片會自動更正時間（已上載的不變）。`;
+    renderClockList(); clockLabel();
+    msg.textContent = "儲存中……";
+    const { error } = await sb.from("xc_photo_clock").upsert({ camera: name, off_s: off }, { onConflict: "camera" });
+    if (error) { st.clockPending = [...new Set([...(st.clockPending || []), name])]; save(); }
+    else { st.clockPending = (st.clockPending || []).filter((k) => k !== name); save(); }
+    const n = staleFor(name).length;
+    msg.textContent = `已套用：${name} ${fmtOff(off)}${error ? "（暫存本機，未能同步到其他裝置；連線後自動補上）" : "（所有上載裝置共用）"}。之後揀的相片會自動更正時間。`
+      + (n ? `已上載的 ${n} 張可按下面「更正已上載」。` : "");
+    renderClockList();
+  }
+  async function fixUploaded(name) {
+    const msg = $("#clockMsg"), off = Number((st.clock || {})[name]) || 0;
+    const cams = [...new Set(staleFor(name).map((p) => p.camera || null))];
+    msg.textContent = "更正中……";
+    let total = 0;
+    for (const cam of cams) {
+      const { data, error } = await sb.rpc("xc_photo_reclock", { p_event: st.event, p_camera: cam, p_off_s: off });
+      if (error) { msg.textContent = "更正失敗：" + error.message; return; }
+      total += Number(data) || 0;
+    }
+    await pull();
+    msg.textContent = `已更正 ${total} 張已上載相片的拍攝時間（${name} ${fmtOff(off)}）。`;
+    renderClockList();
+  }
+  async function clockClear(name) {
+    const { error } = await sb.from("xc_photo_clock").delete().eq("camera", name);
+    if (error) { $("#clockMsg").textContent = "清除失敗（網絡），請稍後再試。"; return; }
+    delete st.clock[name]; st.clockPending = (st.clockPending || []).filter((k) => k !== name); save();
     renderClockList(); clockLabel();
   }
 
@@ -612,6 +672,7 @@
     $("#event").value = st.event;
     queue = (await IDB.all().catch(() => [])).sort((a, b) => a.added - b.added);
     await loadRoster();
+    if (await loadClocks()) clockLabel();   // 相機校正（資料庫，所有裝置共用）：揀相片前要先載入
     await pull(true);
     setInterval(pull, 4000);
     setInterval(work, 1000);
@@ -631,7 +692,10 @@
     $("#clockFile").onchange = (e) => clockPick(e.target.files[0]);
     $("#clockApply").onclick = clockApply;
     $("#clockSeen").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); clockApply(); } };
-    $("#clockList").onclick = (e) => { const b = e.target.closest("[data-clear]"); if (!b) return; delete st.clock[b.dataset.clear]; save(); renderClockList(); clockLabel(); };
+    $("#clockList").onclick = (e) => {
+      const f = e.target.closest("[data-fix]"); if (f) { fixUploaded(f.dataset.fix); return; }
+      const b = e.target.closest("[data-clear]"); if (b) clockClear(b.dataset.clear);
+    };
     $("#clock").addEventListener("close", () => clearInterval(clockTimer));
     clockLabel();
     document.querySelectorAll(".tabs button").forEach((b) => { b.onclick = () => { st.tab = b.dataset.tab; save(); shown = SHOW; renderAll(); }; });

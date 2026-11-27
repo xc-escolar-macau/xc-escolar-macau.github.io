@@ -7,7 +7,7 @@
 
 - 輸出預設放在「<相片資料夾>_上載」；之後在上載頁揀該資料夾內全部 .webp
 - 多核心同時處理；JPEG 先以 1/2、1/4 尺寸解碼（仍不少於 1280px），再用 Lanczos 縮圖：速度快、畫質不受影響
-- 只保留上載頁需要的 EXIF：拍攝時間（含小數秒、時區）、相機牌子及型號（相機時間校正用）；
+- 只保留上載頁需要的 EXIF：拍攝時間（含小數秒、時區）、相機牌子、型號及機身序號（相機時間校正用）；
   GPS 位置等其他資料全部不寫入。上載頁讀出時間後會把 EXIF 整段移除才上載，公開的相片不含任何 EXIF
 - ImageDescription 寫入「xc-prep v1 src=<原檔大小>」：上載頁據此認出已壓縮的相片，並以原檔大小判斷是否已上載過
   （原相經上載頁壓縮、或經本程式壓縮後再上載，都當作同一張）
@@ -48,7 +48,7 @@ except ImportError:
     RapidOCR = None
 
 T_MAKE, T_MODEL, T_DESC, T_EXIF_IFD = 0x010F, 0x0110, 0x010E, 0x8769
-T_ORIG, T_DIGI, T_SUB_ORIG, T_SUB_DIGI, T_OFF_ORIG = 0x9003, 0x9004, 0x9291, 0x9292, 0x9011
+T_ORIG, T_DIGI, T_SUB_ORIG, T_SUB_DIGI, T_OFF_ORIG, T_SERIAL = 0x9003, 0x9004, 0x9291, 0x9292, 0x9011, 0xA431
 
 
 def keep_exif(src: Image.Exif, src_size: int, bibs=None) -> Image.Exif:
@@ -60,6 +60,9 @@ def keep_exif(src: Image.Exif, src_size: int, bibs=None) -> Image.Exif:
             out[t] = v.strip()[:60]
     out[T_DESC] = f"xc-prep {VERSION} src={src_size}" + ("" if bibs is None else " ocr=" + ",".join(f"{b}:{c}" for b, c in bibs))
     ex = src.get_ifd(T_EXIF_IFD)
+    sn = ex.get(T_SERIAL)
+    if isinstance(sn, str) and sn.strip():   # 機身序號：上載頁據此分辨同型號的相機，各自校正時間
+        out.get_ifd(T_EXIF_IFD)[T_SERIAL] = sn.strip()[:40]
     when = ex.get(T_ORIG) or ex.get(T_DIGI) or src.get(0x0132)   # DateTimeOriginal → DateTimeDigitized → DateTime
     if when:
         o = out.get_ifd(T_EXIF_IFD)

@@ -131,3 +131,12 @@ def test_bib_scan_writes_ocr_and_rerun_adds_scan(tmp_path):
     man = json.loads((out / "_prep.json").read_text(encoding="utf-8"))
     assert [b for b, _ in next(iter(man.values()))["ocr"]] == [357]
     assert Image.open(out / "IMG_1.webp").size == (1280, 853)
+
+
+def test_keep_exif_keeps_body_serial():
+    """機身序號（0xA431）保留：上載頁據此分辨同型號的兩部相機，各自校正時間"""
+    src = Image.Exif()
+    src[0x0110] = "Canon EOS R6"
+    e = src.get_ifd(0x8769); e[0x9003] = "2026:11:29 08:10:00"; e[0xA431] = " 77000123 "
+    out = prep.keep_exif(src, 1)
+    assert out.get_ifd(0x8769)[0xA431] == "77000123"

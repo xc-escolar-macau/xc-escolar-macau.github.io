@@ -14,12 +14,14 @@ CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*",
 MO = timezone(timedelta(hours=8))
 
 
-def _jpeg(w=3000, h=2000, when="2026:11:29 08:10:00", color=(40, 120, 200), model="TestCam"):
-    """產生含 EXIF 拍攝時間及 GPS 的 JPEG（用來確認上載檔已去除 EXIF）"""
+def _jpeg(w=3000, h=2000, when="2026:11:29 08:10:00", color=(40, 120, 200), model="TestCam", serial=None):
+    """產生含 EXIF 拍攝時間及 GPS 的 JPEG（用來確認上載檔已去除 EXIF）；serial＝機身序號"""
     im = Image.new("RGB", (w, h), color)
     ex = Image.Exif()
     ex[0x0110] = model
     ex.get_ifd(0x8769)[0x9003] = when
+    if serial:
+        ex.get_ifd(0x8769)[0xA431] = serial
     ex.get_ifd(0x8825)[2] = (22.0, 9.0, 0.0)   # GPSLatitude
     buf = io.BytesIO(); im.save(buf, "JPEG", exif=ex.tobytes(), quality=80)
     return buf.getvalue()
@@ -155,7 +157,7 @@ def test_photos_page_after_expiry(pub):
 def adm(browser, base_url):
     ctx = _ctx(browser, base_url)
     db = {"photos": {}, "files": {}, "rev": itertools.count(1), "fn": [], "removed": [], "fn_mode": ["429", "ok"],
-          "ai": True, "hints": [], "near": [], "store": [],
+          "ai": True, "hints": [], "near": [], "store": [], "clock": {}, "reclock": [],
           "photo_cfg": {"url": "https://photostest.supabase.co", "key": "sb_publishable_phtest"}}   # ai：site.json 的 photo_ai（正式預設 false＝人手標）
     # photo_cfg：site.json 的 photos（相片檔案所在的獨立相片專案；None＝沿用主專案 storage）
     roster = [{"bib": 24, "cat": "FC", "heat": 1, "abbr": "CDSJ5", "name": "李蕙伃"},
@@ -182,6 +184,25 @@ def adm(browser, base_url):
         if "/rest/v1/xc_live_roster" in u:
             db.setdefault("roster_q", []).append(u)
             return ok(route, _page(u, sorted(roster + db.get("roster_extra", []), key=lambda r: r["bib"])))
+        if "/rest/v1/xc_photo_clock" in u:   # 相機時間校正（所有裝置共用）
+            if req.method == "GET":
+                return ok(route, [{"camera": k, "off_s": v} for k, v in db["clock"].items()])
+            if req.method == "POST":
+                rows = json.loads(req.post_data)
+                for r in rows if isinstance(rows, list) else [rows]:
+                    db["clock"][r["camera"]] = r["off_s"]
+                return route.fulfill(status=201, body="", headers=CORS)
+            if req.method == "DELETE":
+                from urllib.parse import unquote_plus
+                db["clock"].pop(unquote_plus(u.split("camera=eq.")[1].split("&")[0]), None)
+                return route.fulfill(status=204, body="", headers=CORS)
+        if "/rpc/xc_photo_reclock" in u:
+            q = json.loads(req.post_data); db["reclock"].append(q); n = 0
+            for r in db["photos"].values():
+                if r["event"] == q["p_event"] and r.get("camera") == q["p_camera"] and r["taken_src"] == "exif" and r["status"] != "removed" and (r.get("clock_off_s") or 0) != q["p_off_s"]:
+                    r["taken_ms"] += ((r.get("clock_off_s") or 0) - q["p_off_s"]) * 1000
+                    r["clock_off_s"] = q["p_off_s"] or None; r["rev"] = next(db["rev"]); n += 1
+            return ok(route, n)
         if "/functions/v1/xc-photo-store" in u:   # 相片專案：核對主專案登入憑證後簽發上載網址／刪除
             q = json.loads(req.post_data); db["store"].append({**q, "token": req.headers.get("x-main-token"), "host": u.split("/")[2]})
             if not (req.headers.get("x-main-token") or "").count("."):
@@ -435,7 +456,8 @@ def test_photo_admin_camera_clock(adm, tmp_path):
     no_hscroll(page)
     page.click("#clock .clock-head button")
     expect(page.locator("#clockBtn")).to_have_text("相機時間：已校正 1 部")
-    # 校正保存於本機：重新整理後仍在
+    assert page.db["clock"] == {"Canon EOS R6": 12}   # 存資料庫，所有上載裝置共用
+    # 重新整理後仍在
     page.reload()
     expect(page.locator("#clockBtn")).to_have_text("相機時間：已校正 1 部")
     cam = tmp_path / "cam.jpg"; cam.write_bytes(_jpeg(3000, 2000, "2026:11:29 09:00:00", (200, 30, 30), "Canon EOS R6"))
@@ -450,6 +472,7 @@ def test_photo_admin_camera_clock(adm, tmp_path):
     page.click("#clockBtn")
     page.click("#clockList [data-clear='Canon EOS R6']")
     expect(page.locator("#clockList")).to_contain_text("未有已校正的相機")
+    assert page.db["clock"] == {}
 
 
 def test_photo_admin_clock_formats_and_midnight(adm, tmp_path):
@@ -719,3 +742,40 @@ def test_photo_admin_scan_kept_when_camera_time_looks_wrong(adm, tmp_path):
     expect(page.locator("#bibsIn")).to_have_value("405")
     expect(page.locator("#hints [data-add='7']")).to_have_count(1)   # 7 號不肯定，仍列作「可能」，沒有因時段被剔除
     expect(page.locator("#hints")).not_to_contain_text("已剔除")
+
+
+def test_photo_admin_clock_shared_serial_and_fix_uploaded(adm, tmp_path):
+    """校正存資料庫（另一部裝置已校正，本機直接套用）；同型號兩部相機按機身序號分開校正；
+    上載後才校正的相機，可按「更正已上載 N 張」重新計算拍攝時間"""
+    page = adm
+    page.db["ai"] = False
+    page.db["clock"] = {"Canon EOS R6 #000123": 30}   # 另一部裝置做的校正
+    _login(page)
+    expect(page.locator("#clockBtn")).to_have_text("相機時間：已校正 1 部")
+    a = tmp_path / "a.jpg"; a.write_bytes(_jpeg(when="2026:11:29 09:00:00", model="Canon EOS R6", serial="77000123"))
+    b = tmp_path / "b.jpg"; b.write_bytes(_jpeg(when="2026:11:29 09:00:00", color=(9, 9, 9), model="Canon EOS R6", serial="55999999"))
+    page.set_input_files("#files", [str(a), str(b)])
+    _until(page, lambda: len(page.db["photos"]) == 2)
+    by = {r["camera"]: r for r in page.db["photos"].values()}
+    base = int(datetime(2026, 11, 29, 9, 0, tzinfo=MO).timestamp() * 1000)
+    assert set(by) == {"Canon EOS R6 #000123", "Canon EOS R6 #999999"}
+    assert by["Canon EOS R6 #000123"]["taken_ms"] == base - 30000 and by["Canon EOS R6 #000123"]["clock_off_s"] == 30
+    assert by["Canon EOS R6 #999999"]["taken_ms"] == base and by["Canon EOS R6 #999999"]["clock_off_s"] is None   # 同型號另一部：未校正
+    # 上載後才校正第二部相機（慢 12 秒）
+    page.click("#clockBtn")
+    shot = tmp_path / "clock.jpg"; shot.write_bytes(_jpeg(1200, 800, "2026:11:29 08:10:00", (0, 0, 0), "Canon EOS R6", "55999999"))
+    page.set_input_files("#clockFile", [str(shot)])
+    expect(page.locator("#clockInfo")).to_contain_text("Canon EOS R6 #999999")
+    page.fill("#clockSeen", "081012")
+    page.click("#clockApply")
+    expect(page.locator("#clockMsg")).to_contain_text("慢 12 秒")
+    expect(page.locator("#clockMsg")).to_contain_text("已上載的 1 張")
+    assert page.db["clock"] == {"Canon EOS R6 #000123": 30, "Canon EOS R6 #999999": -12}
+    fix = page.locator("#clockList [data-fix='Canon EOS R6 #999999']")
+    expect(fix).to_have_text("更正已上載 1 張")
+    expect(page.locator("#clockList [data-fix='Canon EOS R6 #000123']")).to_have_count(0)   # 已用正確誤差，不用更正
+    fix.click()
+    expect(page.locator("#clockMsg")).to_contain_text("已更正 1 張")
+    assert page.db["reclock"] == [{"p_event": "48", "p_camera": "Canon EOS R6 #999999", "p_off_s": -12}]
+    assert by["Canon EOS R6 #999999"]["taken_ms"] == base + 12000 and by["Canon EOS R6 #999999"]["clock_off_s"] == -12
+    expect(page.locator("#clockList [data-fix]")).to_have_count(0)
