@@ -426,6 +426,13 @@
       hintsReady = true;
       if (error || !data) { $("#hints").innerHTML = '<p class="muted">未能載入提示（網絡）；仍可直接輸入號碼布。</p>'; return; }
       offCourse = new Set((data.check || []).filter((c) => c.on_course === false).map((c) => c.bib));
+      // 拍攝時間可信（相機 EXIF 時間，而且當時有組別在跑道上）才按時段剔除電腦建議；
+      // 否則多數是相機時間未校正：剔除會把正確的號碼布一併刪走，所以保留建議、只提示核對時間
+      const timeOk = p.taken_src === "exif" && data.taken_ms != null && (data.cats || []).length > 0;
+      if (sugg && firstHints && !timeOk) {
+        firstHints = false;
+        sugg.timeWarn = true;
+      }
       if (sugg && firstHints) {
         firstHints = false;
         const off = b.filter((n) => offCourse.has(n));
@@ -438,6 +445,7 @@
         sugg.unsure = sugg.unsure.filter((n) => !offCourse.has(n));
       }
       const suggHtml = sugg ? `<p class="hint-h">電腦掃描建議（已預先填入，請對照相片核對）</p>`
+        + (sugg.timeWarn ? `<p class="why">${p.taken_src === "exif" ? "拍攝時間沒有組別在跑道上" : "這張相片沒有相機拍攝時間"}：可能是相機時間未校正，建議未按跑道時段過濾，請逐個核對號碼；同一部相機的相片請先按「相機時間」校正再上載。</p>` : "")
         + (sugg.unsure.length ? `<div class="near">${sugg.unsure.map((n) => `<button type="button" class="chip" data-add="${n}"><b class="num">${n}</b> ${esc((ROSTER.get(n) || {}).name || "")}<small>可能（不肯定）</small></button>`).join("")}</div>` : "")
         + (sugg.out.length ? `<p class="muted">已剔除：${esc(sugg.out.join("、"))}</p>` : "") : "";
       const near = (data.near || []).filter((n) => ROSTER.has(n.bib));

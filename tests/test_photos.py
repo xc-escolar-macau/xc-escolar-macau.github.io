@@ -217,7 +217,7 @@ def adm(browser, base_url):
             names = {r["bib"] for r in roster}
             return ok(route, {"taken_ms": db["photos"].get(q["p_id"], {}).get("taken_ms"), "near": db["near"],
                               "check": [{"bib": b, "in_roster": b in names, "on_course": b != 7} for b in q.get("p_bibs") or []],
-                              "cats": [{"cat": "MC", "heat": 1}, {"cat": "MC", "heat": 2}]})
+                              "cats": db.get("cats", [{"cat": "MC", "heat": 1}, {"cat": "MC", "heat": 2}])})
         if "/functions/v1/xc-photo-bibs" in u:
             pid = json.loads(req.post_data)["id"]
             db["fn"].append(pid)
@@ -697,3 +697,25 @@ def test_photo_admin_without_photo_project_uses_main_storage(adm, tmp_path):
     row = next(iter(page.db["photos"].values()))
     assert row["full_path"] in page.db["files"] and row["thumb_path"] in page.db["files"]
     assert not page.db["store"] and not page.db.get("signed_put")
+
+
+def test_photo_admin_scan_kept_when_camera_time_looks_wrong(adm, tmp_path):
+    """拍攝時間沒有任何組別在跑道上（多數是相機時間未校正）：電腦建議不按時段剔除，並提示先校正相機時間"""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    import photo_prep
+    page = adm
+    page.db["ai"] = False
+    page.db["cats"] = []
+    _login(page)
+    src = Image.open(io.BytesIO(_jpeg(when="2026:11:29 03:10:00")))
+    ex = photo_prep.keep_exif(src.getexif(), 4321, [(405, 97), (7, 95)])
+    f = tmp_path / "IMG_8.webp"
+    src.convert("RGB").resize((1280, 853)).save(f, "WEBP", quality=80, exif=ex.tobytes())
+    page.set_input_files("#files", [str(f)])
+    _until(page, lambda: len(page.db["photos"]) == 1)
+    page.locator(".card[data-id]").click()
+    expect(page.locator("#hints .why")).to_contain_text("相機時間未校正")
+    expect(page.locator("#bibsIn")).to_have_value("405")
+    expect(page.locator("#hints [data-add='7']")).to_have_count(1)   # 7 號不肯定，仍列作「可能」，沒有因時段被剔除
+    expect(page.locator("#hints")).not_to_contain_text("已剔除")
