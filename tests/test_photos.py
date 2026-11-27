@@ -600,7 +600,7 @@ def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
 
 def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):
     """photo_prep.py 掃描號碼布（ocr=）：上載時存作建議（ai_bibs／ai_unsure，未公開）；覆核時只預先填入名單內、
-    拍攝時段在跑道上的號碼，其餘剔除並列明原因；不肯定的列作「可能」一按加入；Enter 確認才公開"""
+    拍攝時段在跑道上的三位數號碼，其餘剔除並列明原因；不肯定或 1–2 位數的列作「可能」一按加入；Enter 確認才公開"""
     import sys
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     import photo_prep
@@ -614,19 +614,20 @@ def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):
     page.set_input_files("#files", [str(f)])
     _until(page, lambda: len(page.db["photos"]) == 1)
     row = next(iter(page.db["photos"].values()))
-    assert row["ai_bibs"] == [7, 405, 999] and row["ai_unsure"] == [24, 26]
+    assert row["ai_bibs"] == [405, 999] and row["ai_unsure"] == [7, 24, 26]   # 1–2 位數即使信心高亦只列作「可能」
     assert row["status"] == "pending" and row["bibs"] == []          # 只是建議，未公開
     assert b"xc-prep" not in page.db["files"][row["full_path"]]      # 公開的大圖不帶掃描結果
     card = page.locator(".card[data-id]")
-    expect(card).to_contain_text("建議 7、405、999")
+    expect(card).to_contain_text("建議 405、999")
     card.click()
-    # 7 在名單但該時段不在跑道上（測試假資料：7 號不在跑道上）→ 提示載入後自動剔除；999、26 不在名單
+    # 999、26 不在名單；7 在名單但該時段不在跑道上（測試假資料：7 號不在跑道上）→ 提示載入後剔除
     expect(page.locator("#bibsIn")).to_have_value("405")
     expect(page.locator("#hints")).to_contain_text("電腦掃描建議")
     expect(page.locator("#hints")).to_contain_text("999（不在名單）")
-    expect(page.locator("#hints")).to_contain_text("7（該時段不在跑道上）")
+    expect(page.locator("#hints")).to_contain_text("7（不肯定；該時段不在跑道上）")
     expect(page.locator("#hints")).to_contain_text("26（不在名單）")
-    assert 24 in page.db["hints"][-1]["p_bibs"]                       # 不肯定的建議亦核對是否在跑道上
+    assert {7, 24} <= set(page.db["hints"][-1]["p_bibs"])            # 不肯定的建議亦核對是否在跑道上
+    expect(page.locator("#hints [data-add='7']")).to_have_count(0)
     maybe = page.locator("#hints [data-add='24']")
     expect(maybe).to_contain_text("可能（不肯定）")
     expect(maybe).to_contain_text("李蕙伃")

@@ -215,10 +215,14 @@
         const row = { id: q.id, event: q.event, full_path: p.full, thumb_path: p.thumb, w: q.w, h: q.h, taken_ms: q.taken_ms, taken_src: q.taken_src,
           camera: q.camera || null, clock_off_s: q.clock_off_s || null, src_key: q.src_key || null };
         if (!AI()) Object.assign(row, { status: "pending", reason: "未標號碼布" });
-        // 電腦掃描號碼布（photo_prep.py）：只作建議，存於 ai_bibs（信心 ≥ OCR_SURE）及 ai_unsure；工作人員確認後才寫入 bibs 公開
+        // 電腦掃描號碼布（photo_prep.py）：只作建議，工作人員確認後才寫入 bibs 公開
+        // ai_bibs（預先填入）＝信心 ≥ OCR_SURE 且三位數；其餘（含 1–2 位數）放 ai_unsure（列作「可能」）。
+        // 第 47 屆官方相簿實測：錯誤讀數多是 1–2 位數（被遮住一半的號碼布「612→61」、頒獎台名次、橫額年份碎片），
+        // 用此規則後比賽中相片預先填入的號碼沒有錯誤
         if (!AI() && q.ocr) {
           const asc = (a) => [...new Set(a)].sort((x, y) => x - y);
-          Object.assign(row, { ai_bibs: asc(q.ocr.filter(([, c]) => c >= OCR_SURE).map(([b]) => b)), ai_unsure: asc(q.ocr.filter(([, c]) => c < OCR_SURE).map(([b]) => b)) });
+          const sure = ([b, c]) => c >= OCR_SURE && b >= 100;
+          Object.assign(row, { ai_bibs: asc(q.ocr.filter(sure).map(([b]) => b)), ai_unsure: asc(q.ocr.filter((x) => !sure(x)).map(([b]) => b)) });
         }
         const { error } = await sb.from("xc_photos").upsert(row, { onConflict: "id", ignoreDuplicates: true });
         if (error) throw error;
