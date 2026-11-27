@@ -561,3 +561,38 @@ def test_sql_lookup_requires_name_and_hides_bibs():
     assert re.search(r"grant execute on function public\.xc_photo_judge\(uuid, int\[\], int\[\], text\) to authenticated", sql)
     assert "if not (select public.xc_is_admin()) then raise exception" in sql
     assert not re.search(r"on storage\.objects for select to (anon|public)", sql)
+
+
+def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
+    """電腦先用 scripts/photo_prep.py 壓縮：大圖照原檔上載（畫質不變、不壓縮第二次），只移除 EXIF；
+    拍攝時間、相機型號照讀；之後再揀原相 → 當作同一張略過"""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    import photo_prep
+    page = adm
+    page.db["ai"] = False
+    _login(page)
+    orig = tmp_path / "DSCF0001.jpg"; orig.write_bytes(_jpeg(6000, 4000, "2026:11:29 08:10:00"))
+    pre = tmp_path / "DSCF0001.webp"
+    photo_prep.prep_one(str(orig), str(pre))
+    raw = pre.read_bytes()
+    assert b"EXIF" in raw and b"TestCam" in raw   # 壓縮檔本身帶 EXIF（給上載頁讀時間）
+    page.set_input_files("#files", [str(pre)])
+    _until(page, lambda: len(page.db["photos"]) == 1)
+    row = next(iter(page.db["photos"].values()))
+    assert row["taken_ms"] == int(datetime(2026, 11, 29, 8, 10, tzinfo=MO).timestamp() * 1000) and row["taken_src"] == "exif"
+    assert row["camera"] == "TestCam" and row["src_key"] == f"x{row['taken_ms']}|{orig.stat().st_size}"
+    assert (row["w"], row["h"]) == (1600, 1067)
+    full, thumb = page.db["files"][row["full_path"]], page.db["files"][row["thumb_path"]]
+    # 大圖：沒有 EXIF、不含相機型號；影像資料與壓縮檔逐位相同（沒有重新編碼）
+    assert b"EXIF" not in full and b"TestCam" not in full and b"Exif" not in full
+    assert len(full) < len(raw) and raw.find(b"VP8 ") > 0 and full[full.find(b"VP8 "):] == raw[raw.find(b"VP8 "):raw.find(b"EXIF")]
+    a, b = Image.open(io.BytesIO(full)), Image.open(pre)
+    assert a.size == b.size == (1600, 1067) and a.tobytes() == b.tobytes()
+    assert not a.getexif()
+    assert max(Image.open(io.BytesIO(thumb)).size) == 400 and b"TestCam" not in thumb
+    # 再揀原相（或在另一部機揀原相）：同一張，略過
+    page.set_input_files("#files", [str(orig)])
+    expect(page.locator("#prep")).to_contain_text("略過 1 張（之前已上載）")
+    page.wait_for_timeout(300)
+    assert len(page.db["photos"]) == 1

@@ -1,6 +1,7 @@
 /* 相片上載（工作人員用）：手機揀相上載；預設人手標號碼布（免費方案，賽後標），site.json 設 photo_ai: true 才改用 Gemini 辨識
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
    - 揀相片 → 手機內壓縮成長邊 1600px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
+   - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心，500 張約 2–3 分鐘）：大圖照原檔上載、只移除 EXIF，不壓縮第二次
    - 壓縮後的檔案存於本機 IndexedDB 佇列：斷網、重新整理頁面都不會遺失，恢復後自動續傳
    - 每張：上載兩個檔 → 寫入 xc_photos → 呼叫 Edge Function xc-photo-bibs 辨識並判斷是否自動公開
    - Gemini 配額用完（429）時按建議時間稍後重試
@@ -41,6 +42,7 @@
   async function exifInfo(file) {
     try {
       const buf = new DataView(await file.slice(0, 256 * 1024).arrayBuffer());
+      if (fourcc(buf, 0) === "RIFF" && fourcc(buf, 8) === "WEBP") return webpExif(new DataView(await file.arrayBuffer()));
       if (buf.getUint16(0) !== 0xFFD8) return null;
       let p = 2;
       while (p + 4 < buf.byteLength) {
@@ -52,6 +54,35 @@
     } catch (e) { /* 讀不到 */ }
     return null;
   }
+  /* ---------- 電腦預先壓縮的相片（scripts/photo_prep.py）：WebP，EXIF 在檔案尾段的 EXIF chunk ---------- */
+  const fourcc = (v, o) => o + 4 <= v.byteLength ? String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3)) : "";
+  function webpChunks(v) {
+    const out = [];
+    for (let p = 12; p + 8 <= v.byteLength;) {
+      const n = v.getUint32(p + 4, true), end = p + 8 + n + (n & 1);
+      if (end > v.byteLength + 1) return null;   // 檔案不完整
+      out.push({ id: fourcc(v, p), at: p, data: p + 8, n, end: Math.min(end, v.byteLength) });
+      p = end;
+    }
+    return out;
+  }
+  function webpExif(v) {
+    const c = (webpChunks(v) || []).find((x) => x.id === "EXIF");
+    if (!c) return null;
+    const t = fourcc(v, c.data) === "Exif" ? c.data + 6 : c.data;   // 有些程式在前面加 "Exif\0\0"
+    return readTiff(v, t);
+  }
+  // 移除 EXIF／XMP（不重新編碼，畫質不變）：公開的相片不帶拍攝時間、相機型號等資料
+  async function webpStrip(file) {
+    const ab = await file.arrayBuffer(), v = new DataView(ab), u8 = new Uint8Array(ab);
+    const chunks = webpChunks(v);
+    if (!chunks) return null;
+    const keep = chunks.filter((x) => x.id !== "EXIF" && x.id !== "XMP ").map((x) => u8.slice(x.at, x.end));
+    for (const k of keep) if (String.fromCharCode(...k.slice(0, 4)) === "VP8X") k[8] &= ~0x0C;   // 清除 EXIF、XMP 旗標
+    const len = 4 + keep.reduce((s, k) => s + k.length, 0);
+    const head = new Uint8Array(12); head.set([82, 73, 70, 70]); new DataView(head.buffer).setUint32(4, len, true); head.set([87, 69, 66, 80], 8);
+    return new Blob([head, ...keep], { type: "image/webp" });
+  }
   function readTiff(v, t) {
     const le = v.getUint16(t) === 0x4949;
     const u16 = (o) => v.getUint16(t + o, le), u32 = (o) => v.getUint32(t + o, le);
@@ -61,6 +92,8 @@
     const tag = (o, k) => (o[k] ? str(o[k].val, o[k].cnt).trim() : "");
     const make = tag(ifd0, 0x010F), model = tag(ifd0, 0x0110);
     const cam = (model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`).trim().slice(0, 60);
+    const pm = tag(ifd0, 0x010E).match(/^xc-prep v\d+ src=(\d+)/);   // photo_prep.py 的標記：原檔大小
+    const prep = pm ? { src: Number(pm[1]) } : null;
     if (!ifd0[0x8769]) return null;
     const ex = ifd(ifd0[0x8769].raw);
     const d = ex[0x9003] || ex[0x9004];
@@ -71,7 +104,7 @@
     const tz = /^[+-]\d{2}:\d{2}$/.test(off) ? off : "+08:00";
     const sub = (tag(ex, 0x9291).match(/^\d{1,3}/) || [""])[0].padEnd(3, "0");
     const ms = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.${sub}${tz}`);
-    return Number.isFinite(ms) ? { ms, cam } : null;
+    return Number.isFinite(ms) ? { ms, cam, prep } : null;
   }
 
   /* ---------- 相機時間校正：每部相機一個誤差（秒，正數＝相機快），只套用於該型號相片的 EXIF 時間 ---------- */
@@ -81,7 +114,8 @@
   const fmtOff = (s) => s === 0 ? "準確" : `${s > 0 ? "快" : "慢"} ${Math.floor(Math.abs(s) / 60) ? `${Math.floor(Math.abs(s) / 60)} 分 ` : ""}${Math.abs(s) % 60} 秒`;
 
   /* ---------- 略過已上載：同一張相片（拍攝時間＋檔案大小）不會上載兩次 ---------- */
-  const srcKey = (f, ex) => ex ? `x${ex.ms}|${f.size}` : `f${f.name}|${f.size}|${f.lastModified || 0}`;
+  // 預先壓縮的相片用原檔大小：同一張相經電腦壓縮或直接揀原相上載，都當作同一張
+  const srcKey = (f, ex) => ex ? `x${ex.ms}|${ex.prep ? ex.prep.src : f.size}` : `f${f.name}|${f.size}|${f.lastModified || 0}`;
   const seenAll = store.get("xc-photo-seen", {});
   const seenSet = (ev) => new Set(seenAll[ev] || []);
   function markSeen(ev, keys) {
@@ -119,7 +153,10 @@
         const key = srcKey(f, exif);
         if (alreadyHave(ev, key, local)) { skip++; done++; continue; }
         const bmp = await createImageBitmap(f, { imageOrientation: "from-image" });
-        const full = await shrink(bmp, FULL), thumb = await shrink(bmp, THUMB);
+        // 電腦已壓縮（photo_prep.py）且不大於 1600px：大圖照原檔上載（只移除 EXIF），不再壓縮第二次；縮圖照常在此產生
+        const pre = exif && exif.prep && Math.max(bmp.width, bmp.height) <= FULL ? await webpStrip(f) : null;
+        const full = pre ? { blob: pre, w: bmp.width, h: bmp.height, ext: "webp" } : await shrink(bmp, FULL);
+        const thumb = await shrink(bmp, THUMB);
         if (bmp.close) bmp.close();
         const off = exif ? clockOff(exif.cam) : 0;
         const taken = exif ? exif.ms - off * 1000 : (f.lastModified || null);
