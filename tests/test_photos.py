@@ -311,6 +311,8 @@ def test_photo_admin_upload_compress_and_recognise(adm, tmp_path):
     assert len(signs) == 2 and all(x["host"] == "photostest.supabase.co" and x["token"].count(".") == 2 for x in signs)
     assert {pth for x in signs for pth in x["paths"]} == {r[k] for r in rows for k in ("full_path", "thumb_path")}
     assert len(page.db["signed_put"]) == 4 and all(u.startswith("https://photostest.supabase.co/") and "token=tok-" in u for u in page.db["signed_put"])
+    # 快取只設 1 小時：免費方案的 CDN 不會在刪除時清除快取，移除後網址最遲 1 小時內失效
+    assert all(h.get("cache-control") == "max-age=3600" and h.get("x-upsert") == "true" and "authorization" not in h for h in page.db["upload_headers"])
     page.click(".tabs button[data-tab='approved']")
     _until(page, lambda: page.db.get("img_hosts"))
     assert page.db["img_hosts"] == {"photostest.supabase.co"}   # 縮圖亦由相片專案讀取
@@ -343,7 +345,12 @@ def test_photo_admin_review_approve_and_remove(adm, tmp_path):
     assert page.db["photos"][pid]["bibs"] == [7, 24] and page.db["photos"][pid]["reviewed"] is True
     page.click(".tabs [data-tab='approved']")
     page.click(f".card[data-id='{pid}']")
-    page.click("#remove")
+    n_dialogs = len(page.dialogs)
+    page.click("#remove")                                  # 第一次：只提示，不刪除（不用 confirm 彈出視窗）
+    expect(page.locator("#remove")).to_have_text("再按一次確定移除")
+    page.wait_for_timeout(300)
+    assert page.db["photos"][pid]["status"] != "removed" and not page.db["removed"] and len(page.dialogs) == n_dialogs
+    page.click("#remove")                                  # 第二次（8 秒內）：刪除
     _until(page, lambda: page.db["photos"][pid]["status"] == "removed")
     assert set(page.db["removed"]) == {page.db["photos"][pid]["full_path"], page.db["photos"][pid]["thumb_path"]}, page.db.get("del_body")
     assert page.db["store"][-1]["action"] == "remove" and "del_body" not in page.db   # 經相片專案的 xc-photo-store 刪除

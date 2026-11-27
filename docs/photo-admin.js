@@ -8,7 +8,7 @@
    - 壓縮後的檔案存於本機 IndexedDB 佇列：斷網、重新整理頁面都不會遺失，恢復後自動續傳
    - 每張：上載兩個檔 → 寫入 xc_photos → 呼叫 Edge Function xc-photo-bibs 辨識並判斷是否自動公開
    - Gemini 配額用完（429）時按建議時間稍後重試
-   - 待覆核：輸入／改正號碼布後「批准公開」（自動跳到下一張）；或「移除」（刪除檔案，網址即時失效）
+   - 待覆核：輸入／改正號碼布後「批准公開」（自動跳到下一張）；或「移除」（刪除檔案；免費方案的 CDN 不會即時清除快取，所以快取只設 1 小時，網址最遲 1 小時內失效）
    - 人手標提示（xc_photo_hints）：拍攝時間前後 20 秒經過終點的號碼布（一按加入）、當時在跑道上的組別、
      已輸入號碼布該時段是否在跑道上 */
 (() => {
@@ -215,13 +215,13 @@
             const u = urls.find((x) => x.path === path);
             const res = await fetch(`${PH.url}/storage/v1/object/upload/sign/${BUCKET}/${path}?token=${encodeURIComponent(u.token)}`, {
               method: "PUT", body: blob,
-              headers: { apikey: PH.key, "Content-Type": blob.type, "x-upsert": "true", "cache-control": "max-age=31536000" },
+              headers: { apikey: PH.key, "Content-Type": blob.type, "x-upsert": "true", "cache-control": "max-age=3600" },   // 快取 1 小時：移除後網址最遲 1 小時內失效（免費方案不能清除 CDN 快取）
             });
             if (!res.ok) throw new Error(`相片上載失敗（${res.status}）`);
           }
         } else {
           for (const [path, blob] of files) {
-            const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: blob.type, upsert: true, cacheControl: "31536000" });
+            const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: blob.type, upsert: true, cacheControl: "3600" });
             if (error) throw error;
           }
         }
@@ -406,12 +406,16 @@
     // 放大：真實比賽相片的號碼布很小（1280px 相片約 30px），手機上要放大三倍才看得清；以按下位置為中心
     $("#bigWrap").onclick = (e) => {
       const wrap = $("#bigWrap"), img = wrap.querySelector("img"), r = img.getBoundingClientRect();
-      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      const clamp = (v) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5);
+      const fx = clamp((e.clientX - r.left) / r.width), fy = clamp((e.clientY - r.top) / r.height);
       if (!wrap.classList.toggle("z")) return;
-      requestAnimationFrame(() => {
+      const center = () => {
+        if (!wrap.classList.contains("z")) return;
         wrap.scrollLeft = fx * img.offsetWidth - wrap.clientWidth / 2;
         wrap.scrollTop = fy * img.offsetHeight - wrap.clientHeight / 2;
-      });
+      };
+      requestAnimationFrame(center);
+      if (!img.complete) img.addEventListener("load", () => requestAnimationFrame(center), { once: true });   // 大圖未載入完（網絡慢）：載入後再對準按下的位置
     };
     // 提示：拍攝時間前後經過終點的號碼布＋該時段在跑道上的組別；已輸入號碼布逐個檢查是否在跑道上
     let offCourse = new Set(), hintSeq = 0, hintTimer = 0;
@@ -489,8 +493,18 @@
       try { const r = await recognise(id); if (r.wait) { $("#sheetMsg").textContent = r.msg; return; } } catch (e) { $("#sheetMsg").textContent = "失敗：" + e.message; return; }
       await pull(); $("#sheet").close();
     };
+    // 移除要在 8 秒內按兩次（頁面內確認）：部分 App 內置瀏覽器會封鎖 confirm() 彈出視窗，令按鈕「沒反應」
+    let armed = 0;
     $("#remove").onclick = async () => {
-      if (!confirm("移除這張相片？檔案會被刪除，已分享的網址即時失效，不能復原。")) return;
+      const btn = $("#remove");
+      if (Date.now() - armed > 8000) {
+        armed = Date.now();
+        btn.textContent = "再按一次確定移除";
+        $("#sheetMsg").textContent = "移除後檔案即時刪除，已分享的網址最遲 1 小時內失效，不能復原。";
+        setTimeout(() => { if (btn.isConnected && Date.now() - armed >= 8000) { btn.textContent = "移除"; if ($("#sheetMsg").textContent.startsWith("移除後")) $("#sheetMsg").textContent = ""; } }, 8100);
+        return;
+      }
+      armed = 0;
       $("#sheetMsg").textContent = "移除中……";
       if (PH) {
         try { await photoStore("remove", [p.full_path, p.thumb_path]); } catch (e) { $("#sheetMsg").textContent = "刪除檔案失敗：" + e.message; return; }
