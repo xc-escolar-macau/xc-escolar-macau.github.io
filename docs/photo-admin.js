@@ -20,7 +20,7 @@
   const catLabel = (c) => `${c[0] === "M" ? "男" : "女"}${c[1]}`;
   const BUCKET = "xc-photos", FULL = 1280, THUMB = 400, PARALLEL = 2, OCR_SURE = 80;
 
-  let sb = null, sbPh = null, PH = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map(), ROSTER_HEATS = new Map();
+  let sb = null, PH = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map(), ROSTER_HEATS = new Map();
   const st = Object.assign({ event: "48", tab: "pending" }, store.get("xc-photo-state", {}));
   const save = () => store.set("xc-photo-state", st);
   const photos = new Map(); // 伺服器上的相片紀錄（本 event）
@@ -210,10 +210,14 @@
         const files = [[p.full, q.full], [p.thumb, q.thumb]];
         if (PH) {   // 相片專案：先由 xc-photo-store 簽發上載網址，再直接上載
           const { urls } = await photoStore("sign", files.map(([path]) => path));
+          // 直接 PUT 到簽名網址：新式公開金鑰只放 apikey 標頭（舊版 supabase-js 會同時放 Authorization，被拒）
           for (const [path, blob] of files) {
             const u = urls.find((x) => x.path === path);
-            const { error } = await sbPh.storage.from(BUCKET).uploadToSignedUrl(path, u.token, blob, { contentType: blob.type, upsert: true, cacheControl: "31536000" });
-            if (error) throw error;
+            const res = await fetch(`${PH.url}/storage/v1/object/upload/sign/${BUCKET}/${path}?token=${encodeURIComponent(u.token)}`, {
+              method: "PUT", body: blob,
+              headers: { apikey: PH.key, "Content-Type": blob.type, "x-upsert": "true", "cache-control": "max-age=31536000" },
+            });
+            if (!res.ok) throw new Error(`相片上載失敗（${res.status}）`);
           }
         } else {
           for (const [path, blob] of files) {
@@ -562,7 +566,6 @@
     sb = supabase.createClient(site.views.url, site.views.key, { auth: { persistSession: true, autoRefreshToken: true } });
     // 相片檔案放獨立的相片專案（site.json photos）；未設定則沿用主專案 storage
     PH = site.photos && site.photos.url ? site.photos : null;
-    sbPh = PH ? supabase.createClient(PH.url, PH.key, { auth: { persistSession: false, autoRefreshToken: false, storageKey: "xc-photo-store" } }) : null;
   }
   async function login() {
     const msg = $("#loginMsg"); msg.textContent = "登入中……";
