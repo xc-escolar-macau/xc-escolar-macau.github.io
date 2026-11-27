@@ -32,7 +32,7 @@ def test_compress_keeps_only_needed_exif(tmp_path):
     assert prep.main([str(src), "--workers", "1", "--no-bibs"]) == 0
     out = tmp_path / "男A_上載" / "DSCF0001.webp"
     im = Image.open(out)
-    assert im.format == "WEBP" and im.size == (1067, 1600)
+    assert im.format == "WEBP" and im.size == (853, 1280)
     ex = im.getexif()
     assert ex[0x010F] == "FUJIFILM" and ex[0x0110] == "X-T30"
     assert ex[0x010E] == f"xc-prep v1 src={f.stat().st_size}"
@@ -54,7 +54,7 @@ def test_rerun_skips_done_and_names_do_not_collide(tmp_path):
     out = tmp_path / "相片_上載"
     assert sorted(p.name for p in out.glob("*.webp")) == ["DSC_0001.webp", "DSC_0001_2.webp"]
     man = json.loads((out / "_prep.json").read_text(encoding="utf-8"))
-    assert len(man) == 2 and all(v["w"] == 1600 for v in man.values())
+    assert len(man) == 2 and all(v["w"] == 1280 for v in man.values())
     # 重跑：只處理新相片，不重複、不改名
     before = {p.name: p.stat().st_mtime_ns for p in out.glob("*.webp")}
     camera_jpeg(src / "相機1" / "DSC_0002.jpg", 3000, 2000)
@@ -75,15 +75,19 @@ def test_small_photo_not_enlarged_and_png_ok(tmp_path):
 
 
 def test_quality_close_to_direct_resize(tmp_path):
-    """先以一半尺寸解碼再縮圖：與直接由原相縮圖的結果幾乎一樣（平均每個顏色值相差 < 2）"""
+    """先以較小尺寸解碼再縮圖：與「直接由原相縮圖、同樣存成 WebP」的結果幾乎一樣（平均每個顏色值相差 < 1；
+    兩者與未壓縮縮圖的差距主要來自 WebP 編碼本身）"""
+    import io
+    import numpy as np
     src = tmp_path / "q"; src.mkdir()
     f = camera_jpeg(src / "q.jpg")
     assert prep.main([str(src), "--workers", "1", "--quality", "100", "--no-bibs"]) == 0
     a = Image.open(tmp_path / "q_上載" / "q.webp").convert("RGB")
-    b = Image.open(f).convert("RGB"); b.thumbnail((1600, 1600), Image.LANCZOS)
-    assert a.size == b.size
-    diff = sum(abs(x - y) for pa, pb in zip(a.getdata(), b.getdata()) for x, y in zip(pa, pb)) / (a.size[0] * a.size[1] * 3)
-    assert diff < 2, diff
+    b = Image.open(f).convert("RGB"); b.thumbnail((1280, 1280), Image.LANCZOS)
+    buf = io.BytesIO(); b.save(buf, "WEBP", quality=100); c = Image.open(buf).convert("RGB")
+    assert a.size == c.size
+    diff = float(np.abs(np.asarray(a, int) - np.asarray(c, int)).mean())
+    assert diff < 1, diff
 
 
 def test_desc_records_ocr_result():
@@ -126,4 +130,4 @@ def test_bib_scan_writes_ocr_and_rerun_adds_scan(tmp_path):
     assert got == [357], desc
     man = json.loads((out / "_prep.json").read_text(encoding="utf-8"))
     assert [b for b, _ in next(iter(man.values()))["ocr"]] == [357]
-    assert Image.open(out / "IMG_1.webp").size == (1600, 1067)
+    assert Image.open(out / "IMG_1.webp").size == (1280, 853)

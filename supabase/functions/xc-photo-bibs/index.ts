@@ -62,9 +62,18 @@ Deno.serve(async (req) => {
   if (e1 || !ph) return json({ error: "photo not found" }, 404);
   if (ph.status === "removed") return json({ status: "removed" });
 
-  const img = await sb.storage.from("xc-photos").download(ph.full_path);
-  if (img.error || !img.data) return json({ error: "download" }, 502);
-  const bytes = new Uint8Array(await img.data.arrayBuffer());
+  // 相片檔案在獨立的相片專案（secret PHOTOS_URL，例如 https://<ref>.supabase.co）；未設定則讀本專案 storage
+  const phUrl = Deno.env.get("PHOTOS_URL");
+  let bytes: Uint8Array;
+  if (phUrl) {
+    const r0 = await fetch(`${phUrl}/storage/v1/object/public/xc-photos/${ph.full_path}`);
+    if (!r0.ok) return json({ error: "download" }, 502);
+    bytes = new Uint8Array(await r0.arrayBuffer());
+  } else {
+    const img = await sb.storage.from("xc-photos").download(ph.full_path);
+    if (img.error || !img.data) return json({ error: "download" }, 502);
+    bytes = new Uint8Array(await img.data.arrayBuffer());
+  }
   const mime = ph.full_path.endsWith(".jpg") ? "image/jpeg" : "image/webp";
 
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {

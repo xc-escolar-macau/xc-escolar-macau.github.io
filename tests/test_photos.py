@@ -155,7 +155,9 @@ def test_photos_page_after_expiry(pub):
 def adm(browser, base_url):
     ctx = _ctx(browser, base_url)
     db = {"photos": {}, "files": {}, "rev": itertools.count(1), "fn": [], "removed": [], "fn_mode": ["429", "ok"],
-          "ai": True, "hints": [], "near": []}   # ai：site.json 的 photo_ai（正式預設 false＝人手標）
+          "ai": True, "hints": [], "near": [], "store": [],
+          "photo_cfg": {"url": "https://photostest.supabase.co", "key": "sb_publishable_phtest"}}   # ai：site.json 的 photo_ai（正式預設 false＝人手標）
+    # photo_cfg：site.json 的 photos（相片檔案所在的獨立相片專案；None＝沿用主專案 storage）
     roster = [{"bib": 24, "cat": "FC", "heat": 1, "abbr": "CDSJ5", "name": "李蕙伃"},
               {"bib": 405, "cat": "MC", "heat": 1, "abbr": "IV", "name": "陳浩天"},
               {"bib": 7, "cat": "MC", "heat": 2, "abbr": "CAM", "name": "羅焯饒"}]
@@ -180,8 +182,24 @@ def adm(browser, base_url):
         if "/rest/v1/xc_live_roster" in u:
             db.setdefault("roster_q", []).append(u)
             return ok(route, _page(u, sorted(roster + db.get("roster_extra", []), key=lambda r: r["bib"])))
+        if "/functions/v1/xc-photo-store" in u:   # 相片專案：核對主專案登入憑證後簽發上載網址／刪除
+            q = json.loads(req.post_data); db["store"].append({**q, "token": req.headers.get("x-main-token"), "host": u.split("/")[2]})
+            if not (req.headers.get("x-main-token") or "").count("."):
+                return ok(route, {"error": "login"}, 401)
+            if q["action"] == "sign":
+                return ok(route, {"urls": [{"path": pth, "token": f"tok-{pth}"} for pth in q["paths"]]})
+            for pth in q["paths"]:
+                db["files"].pop(pth, None); db["removed"].append(pth)
+            return ok(route, {"removed": len(q["paths"])})
+        if "/storage/v1/object/upload/sign/xc-photos/" in u:
+            path = u.split("/upload/sign/xc-photos/")[1].split("?")[0]
+            db.setdefault("signed_put", []).append(u)
+            db["files"][path] = _image_in(req.post_data_buffer)
+            db.setdefault("upload_headers", []).append({**req.headers, "host": u.split("/")[2]})
+            return ok(route, {"Key": f"xc-photos/{path}"})
         if "/storage/v1/object/public/xc-photos/" in u:
             path = u.split("/object/public/xc-photos/")[1]
+            db.setdefault("img_hosts", set()).add(u.split("/")[2])
             body = db["files"].get(path)
             return route.fulfill(status=200 if body else 404, content_type="image/webp", body=body or b"", headers=CORS)
         if "/storage/v1/object/xc-photos" in u:
@@ -233,7 +251,7 @@ def adm(browser, base_url):
     site_json = json.loads((pathlib.Path(__file__).resolve().parents[1] / "docs/data/site.json").read_text(encoding="utf-8"))
 
     def site(route):
-        body = {**site_json, "photo_ai": db["ai"]}
+        body = {**site_json, "photo_ai": db["ai"], "photos": db["photo_cfg"]}
         return route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
     ctx.route("**/data/site.json*", site)
     pg = ctx.new_page()
@@ -279,15 +297,23 @@ def test_photo_admin_upload_compress_and_recognise(adm, tmp_path):
     assert rows[0]["taken_ms"] == want and rows[0]["taken_src"] == "exif"
     assert rows[0]["event"] == "48" and re.fullmatch(r"48/[0-9a-f-]{36}\.webp", rows[0]["full_path"])
     assert rows[0]["thumb_path"] == rows[0]["full_path"].replace(".webp", "_t.webp")
-    # 上載檔：已壓縮、長邊 1600／400、沒有 EXIF（GPS 等）
+    # 上載檔：已壓縮、長邊 1280／400、沒有 EXIF（GPS 等）
     for r in rows:
         full, thumb = page.db["files"][r["full_path"]], page.db["files"][r["thumb_path"]]
-        for blob, edge in ((full, 1600), (thumb, 400)):
+        for blob, edge in ((full, 1280), (thumb, 400)):
             assert blob[:4] == b"RIFF" and b"Exif" not in blob and b"TestCam" not in blob
             im = Image.open(io.BytesIO(blob))
             assert max(im.size) == edge
         assert len(full) < 400_000
-    assert (rows[1]["w"], rows[1]["h"]) == (1067, 1600)   # 直度相片維持直度
+    assert (rows[1]["w"], rows[1]["h"]) == (853, 1280)   # 直度相片維持直度
+    # 檔案放獨立的相片專案：先經 xc-photo-store（附主專案登入憑證）簽發上載網址，再直接上載到相片專案
+    signs = [x for x in page.db["store"] if x["action"] == "sign"]
+    assert len(signs) == 2 and all(x["host"] == "photostest.supabase.co" and x["token"].count(".") == 2 for x in signs)
+    assert {pth for x in signs for pth in x["paths"]} == {r[k] for r in rows for k in ("full_path", "thumb_path")}
+    assert len(page.db["signed_put"]) == 4 and all(u.startswith("https://photostest.supabase.co/") and "token=tok-" in u for u in page.db["signed_put"])
+    page.click(".tabs button[data-tab='approved']")
+    _until(page, lambda: page.db.get("img_hosts"))
+    assert page.db["img_hosts"] == {"photostest.supabase.co"}   # 縮圖亦由相片專案讀取
     # 本機佇列已清空；已公開 1、待覆核 1
     expect(page.locator("#nQueue")).to_have_text("0")
     expect(page.locator("#nApproved")).to_have_text("1")
@@ -320,6 +346,7 @@ def test_photo_admin_review_approve_and_remove(adm, tmp_path):
     page.click("#remove")
     _until(page, lambda: page.db["photos"][pid]["status"] == "removed")
     assert set(page.db["removed"]) == {page.db["photos"][pid]["full_path"], page.db["photos"][pid]["thumb_path"]}, page.db.get("del_body")
+    assert page.db["store"][-1]["action"] == "remove" and "del_body" not in page.db   # 經相片專案的 xc-photo-store 刪除
     expect(page.locator(f".card[data-id='{pid}']")).to_have_count(0)
 
 
@@ -582,13 +609,13 @@ def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
     row = next(iter(page.db["photos"].values()))
     assert row["taken_ms"] == int(datetime(2026, 11, 29, 8, 10, tzinfo=MO).timestamp() * 1000) and row["taken_src"] == "exif"
     assert row["camera"] == "TestCam" and row["src_key"] == f"x{row['taken_ms']}|{orig.stat().st_size}"
-    assert (row["w"], row["h"]) == (1600, 1067)
+    assert (row["w"], row["h"]) == (1280, 853)
     full, thumb = page.db["files"][row["full_path"]], page.db["files"][row["thumb_path"]]
     # 大圖：沒有 EXIF、不含相機型號；影像資料與壓縮檔逐位相同（沒有重新編碼）
     assert b"EXIF" not in full and b"TestCam" not in full and b"Exif" not in full
     assert len(full) < len(raw) and raw.find(b"VP8 ") > 0 and full[full.find(b"VP8 "):] == raw[raw.find(b"VP8 "):raw.find(b"EXIF")]
     a, b = Image.open(io.BytesIO(full)), Image.open(pre)
-    assert a.size == b.size == (1600, 1067) and a.tobytes() == b.tobytes()
+    assert a.size == b.size == (1280, 853) and a.tobytes() == b.tobytes()
     assert not a.getexif()
     assert max(Image.open(io.BytesIO(thumb)).size) == 400 and b"TestCam" not in thumb
     # 再揀原相（或在另一部機揀原相）：同一張，略過
@@ -610,7 +637,7 @@ def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):
     src = Image.open(io.BytesIO(_jpeg(when="2026:11:29 08:10:00")))
     ex = photo_prep.keep_exif(src.getexif(), 4321, [(405, 97), (7, 95), (999, 99), (24, 60), (26, 55)])
     f = tmp_path / "IMG_9.webp"
-    src.convert("RGB").resize((1600, 1067)).save(f, "WEBP", quality=80, exif=ex.tobytes())
+    src.convert("RGB").resize((1280, 853)).save(f, "WEBP", quality=80, exif=ex.tobytes())
     page.set_input_files("#files", [str(f)])
     _until(page, lambda: len(page.db["photos"]) == 1)
     row = next(iter(page.db["photos"].values()))
@@ -640,3 +667,17 @@ def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):
     page.locator(".tabs button[data-tab='approved']").click()
     expect(page.locator(".card[data-id]")).to_contain_text("24、405")
     expect(page.locator(".card[data-id]")).not_to_contain_text("建議")
+
+
+def test_photo_admin_without_photo_project_uses_main_storage(adm, tmp_path):
+    """site.json 未設 photos：沿用主專案 storage 上載（舊設定仍可用）"""
+    page = adm
+    page.db["photo_cfg"] = None
+    page.db["ai"] = False
+    _login(page)
+    f = tmp_path / "a.jpg"; f.write_bytes(_jpeg())
+    page.set_input_files("#files", [str(f)])
+    _until(page, lambda: len(page.db["photos"]) == 1)
+    row = next(iter(page.db["photos"].values()))
+    assert row["full_path"] in page.db["files"] and row["thumb_path"] in page.db["files"]
+    assert not page.db["store"] and not page.db.get("signed_put")

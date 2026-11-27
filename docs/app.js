@@ -958,7 +958,7 @@
   /* ---------- 比賽相片（第 48 屆起）：號碼布＋姓名兩者對得上才回傳相片（supabase/008_photos.sql 的 xc_photo_lookup） ---------- */
   const PH_END = Date.parse("2027-09-01T00:00:00+08:00");   // 保留一個學年
   let PH_LAST = null;   // 本次瀏覽最近一次查詢（只存在記憶體，不寫入網址或瀏覽器）
-  const photoUrl = (path) => `${DB.site.views.url}/storage/v1/object/public/xc-photos/${path}`;
+  const photoUrl = (path) => `${(DB.site.photos || DB.site.views).url}/storage/v1/object/public/xc-photos/${path}`;   // 相片檔案在獨立的相片專案
   const refreshBtn = (id) => `<button class="lv-refresh" id="${id}" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${t("lvRefresh")}</button>`;
   function renderPhotos(params) {
     const ed = (DB.race && DB.race.edition) || 48;

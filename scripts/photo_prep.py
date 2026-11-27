@@ -1,12 +1,12 @@
 """比賽相片：電腦批量壓縮（上載前）
-相機原相（約 10MB）→ 長邊 1600px WebP（約 350KB），上載頁 photo-admin.html 直接上載、不再壓縮第二次。
+相機原相（約 10MB）→ 長邊 1280px WebP（約 220KB），上載頁 photo-admin.html 直接上載、不再壓縮第二次。
 
 用法：
     python -P -X utf8 scripts/photo_prep.py <相片資料夾> [--out 輸出資料夾] [--workers N]
     （Windows 可把資料夾拖到 scripts/photo_prep.bat 上）
 
 - 輸出預設放在「<相片資料夾>_上載」；之後在上載頁揀該資料夾內全部 .webp
-- 多核心同時處理；JPEG 先以一半尺寸解碼（仍不少於 1600px），再用 Lanczos 縮圖：速度快、畫質不受影響
+- 多核心同時處理；JPEG 先以 1/2、1/4 尺寸解碼（仍不少於 1280px），再用 Lanczos 縮圖：速度快、畫質不受影響
 - 只保留上載頁需要的 EXIF：拍攝時間（含小數秒、時區）、相機牌子及型號（相機時間校正用）；
   GPS 位置等其他資料全部不寫入。上載頁讀出時間後會把 EXIF 整段移除才上載，公開的相片不含任何 EXIF
 - ImageDescription 寫入「xc-prep v1 src=<原檔大小>」：上載頁據此認出已壓縮的相片，並以原檔大小判斷是否已上載過
@@ -31,7 +31,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-FULL, QUALITY, VERSION = 1600, 82, "v1"
+FULL, QUALITY, VERSION = 1280, 82, "v1"   # 長邊與上載頁 FULL 相同（相片專案免費 1GB：3,000 張約 0.7GB）
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 try:   # iPhone HEIC（如有安裝 pillow-heif）
     import pillow_heif
@@ -109,8 +109,9 @@ def prep_one(src: str, dst: str, size: int = FULL, quality: int = QUALITY, bibs:
             if bibs:   # 掃描號碼布要較大的圖：按比例要求長邊不少於 OCR_SIDE
                 k = max(size, OCR_SIDE) / max(im.size)
                 im.draft("RGB", (math.ceil(im.width * k), math.ceil(im.height * k)))
-            else:
-                im.draft("RGB", (size, size))   # 以 1/2、1/4… 解碼，結果兩邊仍不少於 size
+            else:   # 以 1/2、1/4… 解碼，長邊仍不少於 size 的 1.5 倍（再用 Lanczos 縮圖，畫質與直接縮圖無異）
+                k = 1.5 * size / max(im.size)
+                im.draft("RGB", (math.ceil(im.width * k), math.ceil(im.height * k)))
         icc = im.info.get("icc_profile")
         im = ImageOps.exif_transpose(im)  # 按相機方向轉正（之後不再需要 Orientation）
         if im.mode != "RGB":

@@ -1,8 +1,10 @@
 /* 相片上載（工作人員用）：手機揀相上載；預設人手標號碼布（免費方案，賽後標），site.json 設 photo_ai: true 才改用 Gemini 辨識
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
-   - 揀相片 → 手機內壓縮成長邊 1600px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
+   - 揀相片 → 手機內壓縮成長邊 1280px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
    - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心）：大圖照原檔上載、只移除 EXIF，不壓縮第二次
    - photo_prep.py 亦在本機掃描號碼布（ocr=）：人手標時預先填入名單內、拍攝時段在跑道上的號碼；不肯定的列作「可能」；仍須工作人員確認才公開
+   - 相片檔案放獨立的相片專案（site.json photos；另一個 Supabase organization，超額亦不影響計時）：
+     上載前由 Edge Function xc-photo-store 核對管理員身分並簽發上載網址；移除亦經該函式
    - 壓縮後的檔案存於本機 IndexedDB 佇列：斷網、重新整理頁面都不會遺失，恢復後自動續傳
    - 每張：上載兩個檔 → 寫入 xc_photos → 呼叫 Edge Function xc-photo-bibs 辨識並判斷是否自動公開
    - Gemini 配額用完（429）時按建議時間稍後重試
@@ -16,9 +18,9 @@
   const store = { get(k, fb) { try { const v = localStorage.getItem(k); return v == null ? fb : JSON.parse(v); } catch (e) { return fb; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 無痕模式 */ } } };
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 3 | 8)).toString(16); }));
   const catLabel = (c) => `${c[0] === "M" ? "男" : "女"}${c[1]}`;
-  const BUCKET = "xc-photos", FULL = 1600, THUMB = 400, PARALLEL = 2, OCR_SURE = 80;
+  const BUCKET = "xc-photos", FULL = 1280, THUMB = 400, PARALLEL = 2, OCR_SURE = 80;
 
-  let sb = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map(), ROSTER_HEATS = new Map();
+  let sb = null, sbPh = null, PH = null, SITE = null, SCHOOL = new Map(), ROSTER = new Map(), ROSTER_HEATS = new Map();
   const st = Object.assign({ event: "48", tab: "pending" }, store.get("xc-photo-state", {}));
   const save = () => store.set("xc-photo-state", st);
   const photos = new Map(); // 伺服器上的相片紀錄（本 event）
@@ -156,7 +158,7 @@
         const key = srcKey(f, exif);
         if (alreadyHave(ev, key, local)) { skip++; done++; continue; }
         const bmp = await createImageBitmap(f, { imageOrientation: "from-image" });
-        // 電腦已壓縮（photo_prep.py）且不大於 1600px：大圖照原檔上載（只移除 EXIF），不再壓縮第二次；縮圖照常在此產生
+        // 電腦已壓縮（photo_prep.py）且不大於 FULL（1280px）：大圖照原檔上載（只移除 EXIF），不再壓縮第二次；縮圖照常在此產生
         const pre = exif && exif.prep && Math.max(bmp.width, bmp.height) <= FULL ? await webpStrip(f) : null;
         const full = pre ? { blob: pre, w: bmp.width, h: bmp.height, ext: "webp" } : await shrink(bmp, FULL);
         const thumb = await shrink(bmp, THUMB);
@@ -205,9 +207,19 @@
     const p = paths(q);
     try {
       if (q.stage === "ready") {
-        for (const [path, blob] of [[p.full, q.full], [p.thumb, q.thumb]]) {
-          const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: blob.type, upsert: true, cacheControl: "31536000" });
-          if (error) throw error;
+        const files = [[p.full, q.full], [p.thumb, q.thumb]];
+        if (PH) {   // 相片專案：先由 xc-photo-store 簽發上載網址，再直接上載
+          const { urls } = await photoStore("sign", files.map(([path]) => path));
+          for (const [path, blob] of files) {
+            const u = urls.find((x) => x.path === path);
+            const { error } = await sbPh.storage.from(BUCKET).uploadToSignedUrl(path, u.token, blob, { contentType: blob.type, upsert: true, cacheControl: "31536000" });
+            if (error) throw error;
+          }
+        } else {
+          for (const [path, blob] of files) {
+            const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: blob.type, upsert: true, cacheControl: "31536000" });
+            if (error) throw error;
+          }
         }
         q.stage = "uploaded"; q.err = ""; await IDB.put(q);
       }
@@ -291,7 +303,22 @@
       if (data.length < PAGE) break;
     }
   }
-  const pubUrl = (path) => `${SITE.views.url}/storage/v1/object/public/${BUCKET}/${path}`;
+  const pubUrl = (path) => `${(PH || SITE.views).url}/storage/v1/object/public/${BUCKET}/${path}`;
+  // 相片專案的 Edge Function：上載簽名／刪除；以主專案登入憑證證明是管理員
+  async function photoStore(action, list) {
+    const { data } = await sb.auth.getSession();
+    const token = data && data.session && data.session.access_token;
+    if (!token) throw new Error("請重新登入");
+    const res = await fetch(`${PH.url}/functions/v1/xc-photo-store`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: PH.key, "x-main-token": token },
+      body: JSON.stringify({ action, paths: list }),
+    });
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* 非 JSON */ }
+    if (!res.ok) throw new Error(res.status === 403 ? "此帳戶未獲授權上載相片" : body.error || `相片儲存失敗（${res.status}）`);
+    return body;
+  }
   const who = (bib) => {
     const r = ROSTER.get(bib);
     if (!r) return `<span class="who-bad">${bib} 不在名單</span>`;
@@ -372,7 +399,7 @@
         <button type="submit" class="ghost">關閉</button>
       </div>
       <p id="sheetMsg" class="msg" role="alert"></p>`;
-    // 放大：真實比賽相片的號碼布很小（1600px 相片約 40px），手機上要放大三倍才看得清；以按下位置為中心
+    // 放大：真實比賽相片的號碼布很小（1280px 相片約 30px），手機上要放大三倍才看得清；以按下位置為中心
     $("#bigWrap").onclick = (e) => {
       const wrap = $("#bigWrap"), img = wrap.querySelector("img"), r = img.getBoundingClientRect();
       const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
@@ -461,8 +488,12 @@
     $("#remove").onclick = async () => {
       if (!confirm("移除這張相片？檔案會被刪除，已分享的網址即時失效，不能復原。")) return;
       $("#sheetMsg").textContent = "移除中……";
-      const { error } = await sb.storage.from(BUCKET).remove([p.full_path, p.thumb_path]);
-      if (error) { $("#sheetMsg").textContent = "刪除檔案失敗：" + error.message; return; }
+      if (PH) {
+        try { await photoStore("remove", [p.full_path, p.thumb_path]); } catch (e) { $("#sheetMsg").textContent = "刪除檔案失敗：" + e.message; return; }
+      } else {
+        const { error } = await sb.storage.from(BUCKET).remove([p.full_path, p.thumb_path]);
+        if (error) { $("#sheetMsg").textContent = "刪除檔案失敗：" + error.message; return; }
+      }
       await save2({ status: "removed", reviewed: true, bibs: [] });
     };
     $("#sheet").showModal();
@@ -529,6 +560,9 @@
     SITE = site;
     for (const s of race.schools) SCHOOL.set(s.abbr, s.zh);
     sb = supabase.createClient(site.views.url, site.views.key, { auth: { persistSession: true, autoRefreshToken: true } });
+    // 相片檔案放獨立的相片專案（site.json photos）；未設定則沿用主專案 storage
+    PH = site.photos && site.photos.url ? site.photos : null;
+    sbPh = PH ? supabase.createClient(PH.url, PH.key, { auth: { persistSession: false, autoRefreshToken: false, storageKey: "xc-photo-store" } }) : null;
   }
   async function login() {
     const msg = $("#loginMsg"); msg.textContent = "登入中……";
