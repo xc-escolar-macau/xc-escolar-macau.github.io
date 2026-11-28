@@ -157,7 +157,7 @@ def test_photos_page_after_expiry(pub):
 def adm(browser, base_url):
     ctx = _ctx(browser, base_url)
     db = {"photos": {}, "files": {}, "rev": itertools.count(1), "fn": [], "removed": [], "fn_mode": ["429", "ok"],
-          "ai": True, "auto": False, "hints": [], "near": [], "store": [], "clock": {}, "reclock": [],
+          "ai": True, "auto": False, "watermark": None, "hints": [], "near": [], "store": [], "clock": {}, "reclock": [],
           "photo_cfg": {"url": "https://photostest.supabase.co", "key": "sb_publishable_phtest"}}   # ai：site.json 的 photo_ai（正式預設 false＝人手標）
     # photo_cfg：site.json 的 photos（相片檔案所在的獨立相片專案；None＝沿用主專案 storage）
     roster = [{"bib": 24, "cat": "FC", "heat": 1, "abbr": "CDSJ5", "name": "李蕙伃"},
@@ -272,7 +272,7 @@ def adm(browser, base_url):
     site_json = json.loads((pathlib.Path(__file__).resolve().parents[1] / "docs/data/site.json").read_text(encoding="utf-8"))
 
     def site(route):
-        body = {**site_json, "photo_ai": db["ai"], "photo_auto": db["auto"], "photos": db["photo_cfg"]}
+        body = {**site_json, "photo_ai": db["ai"], "photo_auto": db["auto"], "photo_watermark": db["watermark"], "photos": db["photo_cfg"]}
         return route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
     ctx.route("**/data/site.json*", site)
     pg = ctx.new_page()
@@ -662,6 +662,39 @@ def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
     expect(page.locator("#prep")).to_contain_text("略過 1 張（之前已上載）")
     page.wait_for_timeout(300)
     assert len(page.db["photos"]) == 1
+
+
+def _bright(blob, box):
+    """box（佔寬高的比例）內明顯比底色亮的像素數目"""
+    im = Image.open(io.BytesIO(blob)).convert("L")
+    w, h = im.size
+    return sum(1 for v in im.crop((int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h))).tobytes() if v > 150)
+
+
+@pytest.mark.parametrize("size", [(6000, 4000), (4000, 6000)])
+def test_photo_admin_watermark(adm, tmp_path, size):
+    """site.json photo_watermark：大圖及縮圖右下角畫水印（直接揀原相、電腦壓縮檔都要有），其他位置不受影響"""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    import photo_prep
+    page = adm
+    page.db["ai"] = False
+    page.db["watermark"] = json.loads((pathlib.Path(__file__).resolve().parents[1] / "docs/data/site.json").read_text(encoding="utf-8"))["photo_watermark"]
+    _login(page)
+    plain = tmp_path / "A0001.jpg"; plain.write_bytes(_jpeg(*size, "2026:11:29 08:10:00", (30, 60, 90)))
+    orig = tmp_path / "B0001.jpg"; orig.write_bytes(_jpeg(*size, "2026:11:29 08:11:00", (30, 60, 90)))
+    pre = tmp_path / "B0001.webp"
+    photo_prep.prep_one(str(orig), str(pre))
+    page.set_input_files("#files", [str(plain), str(pre)])
+    _until(page, lambda: len(page.db["photos"]) == 2 and len(page.db["files"]) == 4)
+    for row in page.db["photos"].values():
+        for key, edge in (("full_path", 1280), ("thumb_path", 400)):
+            blob = page.db["files"][row[key]]
+            assert blob[:4] == b"RIFF" and b"Exif" not in blob and b"TestCam" not in blob
+            assert max(Image.open(io.BytesIO(blob)).size) == edge
+            assert _bright(blob, (0.4, 0.93, 1, 1)) > 20          # 右下角有白字
+            assert _bright(blob, (0, 0, 1, 0.9)) == 0             # 其餘位置沒有
+            assert _bright(blob, (0, 0.9, 0.35, 1)) == 0          # 左下角沒有（直度相片亦只佔右邊約六成）
 
 
 def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):

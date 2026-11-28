@@ -2,7 +2,8 @@
    - site.json 設 photo_auto: true（2026-11-28 起）：電腦掃描到清楚的三位數號碼，經名單及拍攝時段核對後自動公開，不用逐張批准
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
    - 揀相片 → 手機內壓縮成長邊 1280px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
-   - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心）：大圖照原檔上載、只移除 EXIF，不壓縮第二次
+   - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心）：沒有水印時大圖照原檔上載、只移除 EXIF，不壓縮第二次
+   - site.json 設 photo_watermark（文字）：大圖及縮圖右下角加水印（2026-11-28 起；已上載的相片不追溯）
    - photo_prep.py 亦在本機掃描號碼布（ocr=）：人手標時預先填入名單內、拍攝時段在跑道上的號碼；不肯定的列作「可能」；仍須工作人員確認才公開
    - 相片檔案放獨立的相片專案（site.json photos；另一個 Supabase organization，超額亦不影響計時）：
      上載前由 Edge Function xc-photo-store 核對管理員身分並簽發上載網址；移除亦經該函式
@@ -151,15 +152,31 @@
     return false;
   }
 
+  /* ---------- 水印：右下角半透明白字，壓縮時直接畫入相片（網上看到及下載的都有）；文字在 site.json photo_watermark ---------- */
+  const MARK = () => (SITE && SITE.photo_watermark) || "";
+  function watermark(g, w, h, text) {
+    const long = Math.max(w, h), font = (s) => `700 ${s}px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif`;
+    let size = Math.max(10, Math.round(long * 0.022));
+    g.font = font(size);
+    const room = w * 0.6, tw = g.measureText(text).width;   // 直度相片：最多佔相片寬六成
+    if (tw > room) { size = Math.floor(size * room / tw); g.font = font(size); }
+    const m = Math.round(long * 0.014);
+    g.textAlign = "right"; g.textBaseline = "bottom";
+    g.shadowColor = "rgba(0,0,0,.8)"; g.shadowBlur = size * 0.25; g.shadowOffsetY = Math.max(1, size * 0.06);
+    g.fillStyle = "rgba(255,255,255,.72)";
+    g.fillText(text, w - m, h - m);
+  }
+
   /* ---------- 壓縮：Safari 不支援輸出 WebP 時改用 JPEG ---------- */
-  async function shrink(bmp, max) {
+  async function shrink(bmp, max, q = 0.82) {
     const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
     const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
     const c = document.createElement("canvas"); c.width = w; c.height = h;
     const g = c.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(bmp, 0, 0, w, h);
-    const blob = (type, q) => new Promise((ok) => c.toBlob(ok, type, q));
-    let b = await blob("image/webp", 0.82);
-    if (!b || b.type !== "image/webp") b = await blob("image/jpeg", 0.85);
+    if (MARK()) watermark(g, w, h, MARK());
+    const blob = (type, quality) => new Promise((ok) => c.toBlob(ok, type, quality));
+    let b = await blob("image/webp", q);
+    if (!b || b.type !== "image/webp") b = await blob("image/jpeg", q + 0.03);
     return { blob: b, w, h, ext: b.type === "image/webp" ? "webp" : "jpg" };
   }
   async function prepare(files) {
@@ -174,9 +191,11 @@
         const key = srcKey(f, exif);
         if (alreadyHave(ev, key, local)) { skip++; done++; continue; }
         const bmp = await createImageBitmap(f, { imageOrientation: "from-image" });
-        // 電腦已壓縮（photo_prep.py）且不大於 FULL（1280px）：大圖照原檔上載（只移除 EXIF），不再壓縮第二次；縮圖照常在此產生
-        const pre = exif && exif.prep && Math.max(bmp.width, bmp.height) <= FULL ? await webpStrip(f) : null;
-        const full = pre ? { blob: pre, w: bmp.width, h: bmp.height, ext: "webp" } : await shrink(bmp, FULL);
+        // 電腦已壓縮（photo_prep.py）且不大於 FULL（1280px）：沒有水印時大圖照原檔上載（只移除 EXIF），不再壓縮第二次；
+        // 要加水印便須重新編碼，用較高畫質減少第二次壓縮的損失。縮圖照常在此產生
+        const prepped = !!(exif && exif.prep) && Math.max(bmp.width, bmp.height) <= FULL;
+        const pre = prepped && !MARK() ? await webpStrip(f) : null;
+        const full = pre ? { blob: pre, w: bmp.width, h: bmp.height, ext: "webp" } : await shrink(bmp, FULL, prepped ? 0.88 : 0.82);
         const thumb = await shrink(bmp, THUMB);
         if (bmp.close) bmp.close();
         const off = exif ? clockOff(exif.cam) : 0;

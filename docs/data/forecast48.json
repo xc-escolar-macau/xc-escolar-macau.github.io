@@ -4,23 +4,23 @@
  "source_en": "Macao Meteorological and Geophysical Bureau 7-day forecast",
  "source_url": "https://www.dsmg.gov.mo/zh-hant",
  "date": "2026-11-29",
- "published": "2026-11-25 09:00",
- "generated": "2026-11-25",
+ "published": "2026-11-28 09:01",
+ "generated": "2026-11-28",
  "available": true,
- "status": "02",
- "temp_min": 17,
+ "status": "01",
+ "temp_min": 16,
  "temp_max": 23,
- "rh_min": 50,
- "rh_max": 80,
- "desc_zh": "天晴，部份時間多雲。吹3至5級東至東北風及有陣風。",
- "desc_en": "Fine apart from cloudy periods. Force 3 to 5 east to northeasterly winds with gusts.",
- "wind_zh": "吹3至5級東至東北風及有陣風",
- "wind_en": "Force 3 to 5 east to northeasterly winds",
+ "rh_min": 45,
+ "rh_max": 75,
+ "desc_zh": "天氣乾燥。大致天晴。吹3至5級東北風及有陣風。",
+ "desc_en": "Dry. Mainly fine. Force 3 to 5 northeasterly winds with gusts.",
+ "wind_zh": "吹3至5級東北風及有陣風",
+ "wind_en": "Force 3 to 5 northeasterly winds",
  "rain": false,
- "run_index": 124,
+ "run_index": 120,
  "slow_pct": [
-  1,
-  2
+  0.5,
+  1
  ],
- "level": "mild"
+ "level": "good"
 }

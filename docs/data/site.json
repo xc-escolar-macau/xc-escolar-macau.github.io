@@ -1,5 +1,5 @@
 {
- "_note": "網站設定。removal_url：申請移除／更正的 Google 表單公開填寫網址。views：熱門人氣用的 Supabase 項目網址及公開 publishable key（可放前端；資料表只可讀、寫入只經 xc_hit 每次 +1）。表單編輯網址、回覆試算表、Supabase 管理金鑰屬私人，不放入網站。photos：比賽相片檔案所在的獨立 Supabase 專案（organization xc-photos，與計時分開；公開 publishable key，上載經 Edge Function xc-photo-store）。photo_auto：true＝電腦掃描到清楚的三位數號碼，經核對後自動公開；false＝逐張人手批准。",
+ "_note": "網站設定。removal_url：申請移除／更正的 Google 表單公開填寫網址。views：熱門人氣用的 Supabase 項目網址及公開 publishable key（可放前端；資料表只可讀、寫入只經 xc_hit 每次 +1）。表單編輯網址、回覆試算表、Supabase 管理金鑰屬私人，不放入網站。photos：比賽相片檔案所在的獨立 Supabase 專案（organization xc-photos，與計時分開；公開 publishable key，上載經 Edge Function xc-photo-store）。photo_auto：true＝電腦掃描到清楚的三位數號碼，經核對後自動公開；false＝逐張人手批准。photo_watermark：上載時畫在相片右下角的水印文字；刪去此項即不加水印（已上載的相片不追溯）。",
  "removal_url": "https://docs.google.com/forms/d/e/1FAIpQLSenRgtjwDk834F6VGEzUMODqKeRGx5C4RA3XmzbaYp-KbhoxQ/viewform",
  "removal_days": 7,
  "views": {
@@ -7,6 +7,7 @@
   "key": "sb_publishable_4wBHti1Nh-LJxt6drZsjtQ_t6ICvJ9D"
  },
  "photo_auto": true,
+ "photo_watermark": "XC 澳門學界越野跑・xc-escolar-macau.github.io",
   "photos": {
   "url": "https://nkqwdegcuhldjswbafkg.supabase.co",
   "key": "sb_publishable_ERC2vNFCfibZmEvpXJSuZA_LpB1XBVT"

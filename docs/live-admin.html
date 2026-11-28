@@ -10,11 +10,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="live-admin.css?v=20261125d">
+<link rel="stylesheet" href="live-admin.css?v=20261127c">
 </head>
 <body>
 <header class="top">
-  <b>終點輸入</b>
+  <b id="title">終點輸入</b>
   <span id="sync" class="sync">未登入</span>
   <button id="logout" class="ghost" hidden>登出</button>
 </header>
@@ -28,6 +28,7 @@
   <button id="loginBtn" class="primary">登入</button>
   <p id="loginMsg" class="msg" role="alert"></p>
   <hr>
+  <a class="practice-link" href="live-admin.html?cp=1">途經點輸入（途經點工作人員用；只供終點排序，不會公開）›</a>
   <a class="practice-link" href="live-admin.html?practice=1">練習模式（不寫入資料庫；已登入者使用今屆真實名單，否則以第 47 屆成績示範）›</a>
 </section>
 
@@ -39,7 +40,9 @@
       <option value="test">演練（不公開）</option>
     </select>
     <select id="grp" aria-label="組別及分組"></select>
+    <button id="topBtn" class="ghost top-btn" type="button" hidden>小學頭十名紀念卡</button>
   </section>
+  <p id="cpNote" class="cp-note" hidden>途經點模式：只用於終點排序，不計圈、不計名次，不會在即時成績公開。運動員經過時輸入或按號碼布。</p>
 
   <section id="practiceBar" class="practice" hidden>
     <div class="p-head"><b>練習模式</b><small id="pSrc"></small><label class="p-speed">倍速<select id="pSpeed"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label><span id="pScore"></span></div>
@@ -90,6 +93,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="live-core.js?v=20261125d"></script>
-<script src="live-admin.js?v=20261126a"></script>
+<script src="live-admin.js?v=20261127c"></script>
 </body>
 </html>

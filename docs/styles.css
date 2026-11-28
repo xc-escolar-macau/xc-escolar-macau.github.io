@@ -762,7 +762,7 @@ a.medal:hover { background: var(--surface-2); }
 .lv-team.out { opacity: .55; }
 .lv-team .crest.sm { --sz: 30px; }
 .lv-tm { min-width: 0; display: grid; gap: 4px; }
-.lv-tm b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-tm b { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lv-pls { display: flex; flex-wrap: wrap; gap: 4px; }
 .lv-pl { min-width: 24px; padding: 1px 5px; border-radius: 6px; text-align: center; font-family: var(--num); font-weight: 700; font-size: 13px; background: var(--surface-3); color: var(--text); }
 .lv-pl.ex { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
@@ -798,21 +798,31 @@ a.medal:hover { background: var(--surface-2); }
 .lv-why.muted { color: var(--muted); }
 .lv-caret { width: 8px; height: 8px; margin-top: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform var(--fast) var(--ease); }
 .lv-tw.open .lv-caret { transform: rotate(-135deg); }
-.lv-roster { padding: 4px var(--s4) var(--s3) calc(var(--s3) + 34px + 10px); background: var(--surface-2); }
-.lv-rt { font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
-.lv-rh { margin: var(--s2) 0 2px; font-size: 12.5px; font-weight: 700; color: var(--text-2); }
+.lv-roster { padding: 4px var(--s4) var(--s3) var(--s3); background: var(--surface-2); }
+.lv-rt { font-size: 13.5px; color: var(--muted); margin: 6px 0 2px; }
+.lv-rh { margin: var(--s2) 0 2px; font-size: 14px; font-weight: 700; color: var(--text-2); }
 .lv-roster ul { list-style: none; margin: 0; padding: 0; }
-.lv-roster li { display: flex; justify-content: space-between; gap: var(--s2); padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+/* 出戰名單：名次｜姓名（大字，拼音另起一行）＋狀態，手機上名字不截斷 */
+.lv-roster li { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .lv-roster li:last-child { border-bottom: 0; }
-.lv-roster .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lv-roster .mn small { margin-left: 4px; color: var(--muted); font-size: 11px; }
-.lv-roster .ms { flex: 0 0 auto; color: var(--text-2); font-size: 13px; text-align: right; }
+.lv-roster .mp { font-family: var(--num); font-weight: 800; font-size: 20px; line-height: 1; text-align: center; font-variant-numeric: tabular-nums; color: var(--text); }
+.lv-roster li.sc .mp { color: var(--accent); }
+.lv-roster li.run .mp { color: var(--warn-text); }
+.lv-roster li.wait .mp, .lv-roster li.dnf .mp { color: var(--muted); font-weight: 600; }
+.lv-roster .mb { min-width: 0; display: grid; gap: 3px; }
+.lv-roster .mn { font-size: 18px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+.lv-roster .mn small { display: block; margin: 1px 0 0; color: var(--muted); font-size: 12.5px; font-weight: 500; letter-spacing: .01em; }
+.lv-roster .ms { color: var(--text-2); font-size: 14.5px; line-height: 1.4; }
 .lv-roster li.wait .ms, .lv-roster li.dnf .ms { color: var(--muted); }
 .lv-roster li.run .ms { color: var(--warn-text); }
-.lv-sc-tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 11px; }
+.lv-sc-tag { display: inline-block; margin-right: 6px; padding: 0 7px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; }
 .lv-sl { display: inline-block; margin-top: var(--s2); color: var(--accent); font-size: 13px; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) { .lv-refresh.busy svg, .lv-mv { animation: none; } }
 .lv-ind .lv-run { border-bottom: 1px solid var(--line); }
+/* 即時個人榜：姓名放大（只限即時頁，不影響歷屆排行榜） */
+.lv-ind .row .nm { font-size: 17.5px; font-weight: 700; }
+.lv-ind .row .nm small { font-size: 12.5px; }
+.lv-ind .row .sch { font-size: 14px; color: var(--text-2); }
 .lv-ind .lv-run:last-child { border-bottom: 0; }
 .lv-ind .row { width: 100%; border: 0; border-bottom: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .lv-ind .lv-run.open .row { background: var(--surface-2); }
@@ -952,6 +962,10 @@ a.medal:hover { background: var(--surface-2); }
 .ct-grid small { display: block; font-size: 12px; color: var(--text-2); }
 .ct-hist { display: inline-flex; align-items: center; min-height: var(--tap); margin-top: var(--s1); color: var(--accent); font-weight: 600; }
 .lv-links { margin: var(--s2) 0 0; }
+/* 紀念卡：小學組只開放大會公佈的頭十名 */
+.ct-pri { margin-top: 4px; }
+.ct-grid b.ct-not { font-size: 15px; color: var(--muted); font-weight: 700; }
+.cm-styles:has(button:nth-child(5)) { border-radius: 18px; }
 
 /* ---------- 比賽相片（#/photos） ---------- */
 .ph-bar { display: flex; align-items: center; gap: var(--s2); margin: var(--s4) 0 var(--s2); font-size: 15px; }

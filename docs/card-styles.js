@@ -114,12 +114,12 @@
     const z = c.small ? [22, 40, 24, 34, 84, 20] : [28, 64, 32, 50, h * .58, 30];   // 字級（小、大、中）及三行位置
     ctx.fillStyle = c.muted; FITF(ctx, k.event, w - 56, z[0], 16, 700); ctx.fillText(k.event, x + 28, y + z[3]);
     ctx.fillStyle = c.fg; FITF(ctx, `${k.cat}　第 ${k.place} 名`, w - 56, z[1], 28, 900); ctx.fillText(`${k.cat}　第 ${k.place} 名`, x + 28, y + z[4]);
-    ctx.fillStyle = c.accent; FITF(ctx, `完賽 ${k.finishers} 人・完成時間 ${k.time}`, w - 56, z[2], 18, 800); ctx.fillText(`完賽 ${k.finishers} 人・完成時間 ${k.time}`, x + 28, y + h - z[5]);
+    ctx.fillStyle = c.accent; const ln = k.line || `完賽 ${k.finishers} 人・完成時間 ${k.time}`; FITF(ctx, ln, w - 56, z[2], 18, 800); ctx.fillText(ln, x + 28, y + h - z[5]);
     ctx.restore();
   }
   function heroStat(d) { if (d.cert) return { pre: "#", big: String(d.cert.place), post: "", lab: `第 ${d.cert.edition} 屆名次` }; return d.stats.wins ? { pre: "", big: String(d.stats.wins), post: "×", lab: "冠軍" } : { pre: "#", big: String(d.stats.best), post: "", lab: "最佳名次" }; }
   function statList(d) {
-    const s = d.cert ? [["完賽人數", String(d.cert.finishers)], ["獎牌", String(d.stats.medals)], ["名次", `#${d.cert.place}`]]
+    const s = d.cert ? [[d.cert.finLabel || "完賽人數", String(d.cert.finVal ?? d.cert.finishers)], ["獎牌", String(d.stats.medals)], ["名次", `#${d.cert.place}`]]
       : [["參賽", String(d.stats.races)], ["獎牌", String(d.stats.medals)], ["最佳", `#${d.stats.best}`]];
     s.push(d.pb ? [d.pb.text || `${d.pb.label}最佳`, d.pb.time] : ["冠軍", String(d.stats.wins)]);
     return s;
@@ -361,7 +361,7 @@
     if (d.namePt) { ctx.fillStyle = "#666"; fit(ctx, d.namePt, 500, 40, 22, (s) => `italic 800 ${s}px ${NUM}`); ctx.fillText(d.namePt, 230, 704); }
     if (qr) { drawQR(ctx, qr, PW - 54 - 150, 548, 150, ink, "#fff", 8); ctx.textAlign = "center"; ctx.fillStyle = "#555"; ctx.font = `900 20px ${CJK}`; ctx.fillText("掃描看個人頁", PW - 54 - 75, 724); }
     // 數據條（斜）
-    const sts = [d.cert ? ["完賽人數", String(d.cert.finishers), false] : ["參賽", String(d.stats.races), false], ["冠軍", String(d.stats.wins), !!d.stats.wins], ["獎牌", String(d.stats.medals), false]];
+    const sts = [d.cert ? [d.cert.finLabel || "完賽人數", String(d.cert.finVal ?? d.cert.finishers), false] : ["參賽", String(d.stats.races), false], ["冠軍", String(d.stats.wins), !!d.stats.wins], ["獎牌", String(d.stats.medals), false]];
     const last = d.pb ? [d.pb.text || `${d.pb.label}最佳`, d.pb.time] : ["最佳", `#${d.stats.best}`];
     const unit = (PW - 108) / 4.6; let bx = 54;
     [...sts, [last[0], last[1], false]].forEach(([lab, val, hl], i) => {
@@ -397,5 +397,155 @@
     return cv;
   }
 
-  root.XCCardStyles = { dash, trail, bib };
+  // ================= 完賽紀念卡：相片／插畫背景（第 48 屆；只供紀念卡） =================
+  // 背景圖 docs/img/cert/*.jpg（1080×1350）；版面以 928 寬的邏輯座標繪畫（與示範稿一致），再按比例放大
+  const LW = 928, LK = W / LW, LH = H / LK;
+  async function photoPrep(d, key) {
+    const base = await prep(d);
+    const bg = await loadImg(`img/cert/${key}.jpg`);
+    const { ctx } = base;
+    if (bg) { const s = Math.max(W / bg.width, H / bg.height), w = bg.width * s, h = bg.height * s; ctx.drawImage(bg, (W - w) / 2, (H - h) / 2, w, h); }
+    else { ctx.fillStyle = "#0b1410"; ctx.fillRect(0, 0, W, H); }
+    ctx.save(); ctx.scale(LK, LK);
+    return base;
+  }
+  function shade(ctx, stops) { const g = ctx.createLinearGradient(0, 0, 0, LH); for (const [p, c] of stops) g.addColorStop(p, c); ctx.fillStyle = g; ctx.fillRect(0, 0, LW, LH); }
+  function brandXC(ctx, x, y, xc, fg, bg) {
+    ctx.textBaseline = "middle"; ctx.textAlign = "left";
+    ctx.font = `italic 800 34px ${NUM}`; const xw = ctx.measureText("XC").width;
+    ctx.font = `900 26px ${CJK}`; const tw = ctx.measureText("澳門學界越野跑").width;
+    if (bg) { rr(ctx, x - 16, y - 22, xw + tw + 44, 44, 22); ctx.fillStyle = bg; ctx.fill(); }
+    ctx.fillStyle = xc; ctx.font = `italic 800 34px ${NUM}`; ctx.fillText("XC", x, y + 1);
+    ctx.fillStyle = fg; ctx.font = `900 26px ${CJK}`; ctx.fillText("澳門學界越野跑", x + xw + 10, y);
+    ctx.textBaseline = "alphabetic";
+  }
+  function pill(ctx, text, x, top, bg, fg, size = 22, align = "left") {
+    ctx.font = `900 ${size}px ${CJK}`; const w = ctx.measureText(text).width + size * 1.4, h = size * 1.75;
+    const x0 = align === "center" ? x - w / 2 : x;
+    rr(ctx, x0, top, w, h, h / 2); ctx.fillStyle = bg; ctx.fill();
+    ctx.fillStyle = fg; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(text, x0 + size * .7, top + h / 2 + 1); ctx.textBaseline = "alphabetic";
+    return w;
+  }
+  function certInfo(d) {
+    const k = d.cert, top = !!k.finLabel, hasTime = !!k.time && k.time !== "-";
+    return { k, top, hasTime, finLab: k.finLabel || "完賽人數", finVal: String(k.finVal ?? k.finishers),
+             sub: top ? "大會公佈頭十名" : `完賽 ${k.finishers} 人`, foot: `非官方整理・${k.event}` };
+  }
+  // 姓名＋校徽＋學校（左下）
+  function nameBlock(ctx, d, x, y, maxW, size, fg, sub, crestImg) {
+    ctx.textAlign = "left"; ctx.fillStyle = fg; fit(ctx, d.name, maxW, size, size * .55, (s) => `900 ${s}px ${CJK}`); ctx.fillText(d.name, x, y);
+    const sy = y + size * .5 + 4;
+    crestBox(ctx, crestImg, d, x, sy - 30, 38, true);
+    ctx.fillStyle = sub; fit(ctx, d.school, maxW - 48, 30, 18, (s) => `700 ${s}px ${CJK}`); ctx.fillText(d.school, x + 48, sy);
+  }
+  // 數據列：[標題, 數值, 顏色, 中文?]
+  function statsRow(ctx, items, x, labY, valY, lab, fg) {
+    let cx = x;
+    for (const [l, v, c, zh] of items) {
+      ctx.textAlign = "left"; ctx.fillStyle = lab; ctx.font = `700 20px ${CJK}`; ctx.fillText(l, cx, zh ? valY - 56 : labY);
+      ctx.fillStyle = c || fg; ctx.font = zh ? `900 52px ${CJK}` : `800 92px ${NUM}`; ctx.fillText(v, cx, valY);
+      cx += Math.max(ctx.measureText(v).width, 80) + 44;
+    }
+  }
+  function footRow(ctx, left, right, y, col) {
+    ctx.fillStyle = col; ctx.textAlign = "left";
+    FITF(ctx, left, LW - 96 - 270, 18, 12, 700); ctx.fillText(left, 48, y);
+    ctx.textAlign = "right"; ctx.font = `600 20px ${NUM}`; ctx.fillText(right, LW - 48, y);
+  }
+  function finish(ctx, cv) { ctx.restore(); return cv; }
+
+  // ---------- 松山山徑（中學） ----------
+  async function cTrail(d) {
+    const { cv, ctx, img } = await photoPrep(d, "trail"), I = certInfo(d);
+    shade(ctx, [[0, "rgba(0,0,0,.45)"], [.22, "rgba(0,0,0,0)"], [.45, "rgba(0,0,0,0)"], [.78, "rgba(4,14,8,.92)"], [1, "rgba(4,14,8,.96)"]]);
+    brandXC(ctx, 48, 60, "#4ade80", "#fff");
+    const yn = LH - 330;
+    pill(ctx, `第 ${I.k.edition} 屆完賽紀念`, 48, yn - 132, "#4ade80", "#0b1a10");
+    nameBlock(ctx, d, 48, yn, LW - 96, 92, "#fff", "rgba(255,255,255,.9)", img);
+    const it = [[I.k.cat, `#${I.k.place}`]];
+    if (I.hasTime) it.push(["完成時間", I.k.time]);
+    it.push([I.finLab, I.finVal]);
+    statsRow(ctx, it, 48, yn + 96, yn + 186, "rgba(255,255,255,.8)", "#fff");
+    ctx.fillStyle = "rgba(255,255,255,.85)"; ctx.font = `500 22px ${CJK}`; ctx.textAlign = "left"; ctx.fillText(`${I.k.event}・松山`, 48, yn + 232);
+    footRow(ctx, "非官方整理・" + (d.source || "").replace(/^資料來源：/, ""), d.url, LH - 38, "rgba(255,255,255,.75)");
+    return finish(ctx, cv);
+  }
+  // ---------- 陽光衝線（中學） ----------
+  async function cSun(d) {
+    const { cv, ctx, img } = await photoPrep(d, "sun"), I = certInfo(d);
+    shade(ctx, [[0, "rgba(0,0,0,.55)"], [.26, "rgba(0,0,0,.15)"], [.4, "rgba(0,0,0,0)"], [.58, "rgba(0,0,0,.25)"], [.78, "rgba(0,0,0,.9)"], [1, "rgba(0,0,0,.95)"]]);
+    brandXC(ctx, 48, 60, "#4ade80", "#fff");
+    ctx.save(); ctx.shadowColor = "rgba(0,0,0,.55)"; ctx.shadowBlur = 30; ctx.shadowOffsetY = 6;
+    ctx.textAlign = "right"; ctx.fillStyle = "#fb923c"; fit(ctx, `#${I.k.place}`, 520, 230, 120, (s) => `italic 800 ${s}px ${NUM}`); ctx.fillText(`#${I.k.place}`, LW - 44, 292);
+    ctx.font = `900 24px ${CJK}`; ctx.letterSpacing = "6px"; ctx.fillStyle = "#fff"; ctx.fillText(`第 ${I.k.edition} 屆名次`, LW - 44, 336); ctx.letterSpacing = "0px";
+    ctx.restore();
+    const yn = LH - 300;
+    pill(ctx, `第 ${I.k.edition} 屆完賽紀念`, 48, yn - 128, "#4ade80", "#0b1a10");
+    nameBlock(ctx, d, 48, yn, LW - 96, 92, "#fff", "rgba(255,255,255,.9)", img);
+    const it = [["組別", I.k.cat, null, true]];
+    if (I.hasTime) it.push(["完成時間", I.k.time]);
+    it.push([I.finLab, I.finVal]);
+    statsRow(ctx, it, 48, yn + 96, yn + 186, "rgba(255,255,255,.8)", "#fff");
+    footRow(ctx, I.foot, d.url, LH - 38, "rgba(255,255,255,.75)");
+    return finish(ctx, cv);
+  }
+  // ---------- 終點拱門（小學插畫） ----------
+  async function cArch(d) {
+    const { cv, ctx } = await photoPrep(d, "arch"), I = certInfo(d);
+    const banner = `第 ${I.k.edition} 屆學界越野跑`;
+    ctx.textAlign = "center"; ctx.fillStyle = "#15803d"; FITF(ctx, banner, 560, 46, 28, 900); ctx.fillText(banner, LW / 2, 300);
+    ctx.fillStyle = "#13324a"; ctx.font = `700 22px ${CJK}`; ctx.fillText(`${I.k.event.split("・")[1] || ""}・松山`, LW / 2, 336);
+    brandXC(ctx, 52, 56, "#16a34a", "#13324a", "rgba(255,255,255,.85)");
+    const top = LH - 290, px = 36, pw = LW - 72, R = px + pw - 28;
+    ctx.save(); ctx.shadowColor = "rgba(0,0,0,.25)"; ctx.shadowBlur = 40; ctx.shadowOffsetY = 12; rr(ctx, px, top, pw, 254, 28); ctx.fillStyle = "rgba(255,255,255,.94)"; ctx.fill(); ctx.restore();
+    pill(ctx, `第 ${I.k.edition} 屆完賽紀念`, 68, top + 24, "#16a34a", "#fff");
+    ctx.textAlign = "left"; ctx.fillStyle = "#13324a"; fit(ctx, d.name, 470, 76, 44, (s) => `900 ${s}px ${CJK}`); ctx.fillText(d.name, 68, top + 136);
+    FITF(ctx, `${d.school}・${I.k.cat}`, 470, 28, 18, 700); ctx.fillText(`${d.school}・${I.k.cat}`, 68, top + 180);
+    ctx.textAlign = "right"; ctx.fillStyle = "#ef4444"; ctx.font = `italic 800 170px ${NUM}`; ctx.fillText(`#${I.k.place}`, R, top + 166);
+    ctx.fillStyle = "#13324a"; ctx.font = `900 22px ${CJK}`; ctx.fillText(I.hasTime ? `${I.sub}・${I.k.time}` : I.sub, R, top + 200);
+    ctx.globalAlpha = .75; ctx.font = `700 18px ${CJK}`; ctx.textAlign = "left"; ctx.fillText("非官方整理", 68, top + 234);
+    ctx.textAlign = "right"; ctx.font = `600 20px ${NUM}`; ctx.fillText(d.url, R, top + 234); ctx.globalAlpha = 1;
+    return finish(ctx, cv);
+  }
+  // ---------- 葉仔三角山（小學插畫） ----------
+  async function cLeaf(d) {
+    const { cv, ctx } = await photoPrep(d, "leaf"), I = certInfo(d);
+    brandXC(ctx, 48, 62, "#16a34a", "#1f3a2a");
+    const fy = LH - 74;
+    ctx.strokeStyle = "rgba(31,42,34,.15)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(56, fy - 32); ctx.lineTo(LW - 56, fy - 32); ctx.stroke();
+    ctx.fillStyle = "#56705e"; ctx.textAlign = "left"; FITF(ctx, I.foot, LW - 112 - 270, 18, 12, 700); ctx.fillText(I.foot, 56, fy);
+    ctx.textAlign = "right"; ctx.font = `600 20px ${NUM}`; ctx.fillText(d.url, LW - 56, fy);
+    const sy = fy - 70;
+    ctx.textAlign = "left"; ctx.fillStyle = "#3f5a48"; FITF(ctx, `${d.school}・${I.k.cat}`, 520, 30, 18, 700); ctx.fillText(`${d.school}・${I.k.cat}`, 56, sy);
+    ctx.fillStyle = "#1f2a22"; fit(ctx, d.name, 520, 88, 48, (s) => `900 ${s}px ${CJK}`); ctx.fillText(d.name, 56, sy - 50);
+    pill(ctx, `第 ${I.k.edition} 屆完賽紀念`, 56, sy - 178, "#facc15", "#1f2a22");
+    ctx.textAlign = "right"; ctx.fillStyle = "#3f5a48"; ctx.font = `900 22px ${CJK}`; ctx.fillText(I.hasTime ? `${I.sub}・${I.k.time}` : I.sub, LW - 56, sy);
+    ctx.fillStyle = "#16a34a"; ctx.font = `italic 800 200px ${NUM}`; ctx.fillText(`#${I.k.place}`, LW - 56, sy - 38);
+    return finish(ctx, cv);
+  }
+  // ---------- 光環頒獎台（頭三名；金銀銅各一張背景） ----------
+  const PODIUM = { 1: ["冠軍", ["#fff7c2", "#ffd34d", "#c98a12"], "#ffd34d"], 2: ["亞軍", ["#ffffff", "#d9e4ef", "#8fa3b8"], "#dbe7f3"], 3: ["季軍", ["#ffe0c2", "#e39a5c", "#9a5426"], "#f0a868"] };
+  async function cPodium(d) {
+    const p = Math.min(Math.max(d.cert.place, 1), 3), [title, gs, acc] = PODIUM[p];
+    const { cv, ctx, img } = await photoPrep(d, `podium${p}`), I = certInfo(d);
+    shade(ctx, [[0, "rgba(0,0,0,.35)"], [.18, "rgba(0,0,0,0)"], [.58, "rgba(0,0,0,0)"], [.8, "rgba(0,8,4,.88)"], [1, "rgba(0,8,4,.94)"]]);
+    brandXC(ctx, 48, 60, "#4ade80", "#fff");
+    pill(ctx, `第 ${I.k.edition} 屆${title}`, LW / 2, 120, acc, "#1a1406", 26, "center");
+    const big = `#${I.k.place}`, by = 412;
+    ctx.save(); ctx.textAlign = "center"; ctx.font = `italic 800 300px ${NUM}`;
+    ctx.shadowColor = acc; ctx.shadowBlur = 40; ctx.fillStyle = acc; ctx.globalAlpha = .55; ctx.fillText(big, LW / 2, by); ctx.globalAlpha = 1;
+    ctx.shadowColor = "rgba(0,0,0,.55)"; ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
+    const g = ctx.createLinearGradient(0, by - 250, 0, by); g.addColorStop(0, gs[0]); g.addColorStop(.45, gs[1]); g.addColorStop(1, gs[2]);
+    ctx.fillStyle = g; ctx.fillText(big, LW / 2, by); ctx.restore();
+    const yn = LH - 300;
+    nameBlock(ctx, d, 48, yn, LW - 96, 92, "#fff", "rgba(255,255,255,.9)", img);
+    const it = [["組別", I.k.cat, null, true]];
+    if (I.hasTime) it.push(["完成時間", I.k.time, acc]);
+    it.push([I.finLab, I.finVal]);
+    statsRow(ctx, it, 48, yn + 96, yn + 186, "rgba(255,255,255,.8)", "#fff");
+    footRow(ctx, I.foot, d.url, LH - 38, "rgba(255,255,255,.75)");
+    return finish(ctx, cv);
+  }
+
+  root.XCCardStyles = { dash, trail, bib, cTrail, cSun, cArch, cLeaf, cPodium };
 })(window);

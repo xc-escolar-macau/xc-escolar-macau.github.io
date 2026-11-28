@@ -70,7 +70,7 @@
     const z = c.small ? [22, 40, 24, 34, 84, 20] : [28, 64, 32, 50, h * .58, 30];   // 字級（小、大、中）及三行位置
     ctx.fillStyle = c.muted; FITF(ctx, k.event, w - 56, z[0], 16, 700); ctx.fillText(k.event, x + 28, y + z[3]);
     ctx.fillStyle = c.fg; FITF(ctx, `${k.cat}　第 ${k.place} 名`, w - 56, z[1], 28, 900); ctx.fillText(`${k.cat}　第 ${k.place} 名`, x + 28, y + z[4]);
-    ctx.fillStyle = c.accent; FITF(ctx, `完賽 ${k.finishers} 人・完成時間 ${k.time}`, w - 56, z[2], 18, 800); ctx.fillText(`完賽 ${k.finishers} 人・完成時間 ${k.time}`, x + 28, y + h - z[5]);
+    ctx.fillStyle = c.accent; const ln = k.line || `完賽 ${k.finishers} 人・完成時間 ${k.time}`; FITF(ctx, ln, w - 56, z[2], 18, 800); ctx.fillText(ln, x + 28, y + h - z[5]);
     ctx.restore();
   }
   async function render(d) {
@@ -122,7 +122,7 @@
     const by = 418, bh = 182;
     rr(ctx, M, by, W - 2 * M, bh, 18); ctx.fillStyle = C.surface; ctx.fill();
     const cw = (W - 2 * M) / 4;
-    const cells = [d.cert ? ["完賽人數", String(d.cert.finishers), C.text, NUM] : ["參賽", String(d.stats.races), C.text, NUM], ["冠軍", String(d.stats.wins), d.stats.wins ? C.gold : C.text, NUM], ["獎牌", String(d.stats.medals), C.text, NUM], [d.cert ? "名次" : "最佳", `第${d.stats.best}名`, C.text, CJK]];
+    const cells = [d.cert ? [d.cert.finLabel || "完賽人數", String(d.cert.finVal ?? d.cert.finishers), C.text, NUM] : ["參賽", String(d.stats.races), C.text, NUM], ["冠軍", String(d.stats.wins), d.stats.wins ? C.gold : C.text, NUM], ["獎牌", String(d.stats.medals), C.text, NUM], [d.cert ? "名次" : "最佳", `第${d.stats.best}名`, C.text, CJK]];
     cells.forEach(([lab, val, col, fam], i) => {
       const cx = M + cw * i + cw / 2;
       if (i) { ctx.fillStyle = C.line; ctx.fillRect(M + cw * i, by + 30, 2, bh - 60); }

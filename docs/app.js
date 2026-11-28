@@ -119,15 +119,16 @@
       ctNote: "非官方紀念卡：各組成績由工作人員按終點紀錄整理，並與官方成績核對後逐組開放；正式成績以教育及青年發展局公布為準。",
       ctOpen: "已開放：", ctWait: "比賽後，各組成績經核對後逐組開放。", ctBib: "號碼布", ctName: "姓名（秩序冊上的中文姓名；沒有中文姓名請輸入葡文姓名）",
       ctGo: "查詢", ctNone: "找不到紀錄：請檢查號碼布及姓名，或該組別尚未開放。", ctNet: "暫時未能連線，請稍後再試。", ctNeed: "請輸入號碼布及姓名。",
+      ctPri: "小學組（男女 D、E 組）不設終點計時：待大會公佈頭十名並經核對後，只開放頭十名的紀念卡。", ctTop: "大會公佈頭十名", ctNoT: "未有公佈",
       ctCat: "組別", ctPlace: "名次", ctTime: "完成時間", ctOf: (n) => `完賽 ${n} 人`, ctExport: "匯出完賽紀念卡", ctHist: "查看歷屆成績",
       ctHeat: (h) => `第 ${h} 組`, ctPlaceV: (p) => `第 ${p} 名`,
       phBtn: "比賽相片", phTitle: (n) => `第${n}屆比賽相片`,
-      phNote: "非官方相片，由網站管理員在比賽中拍攝。輸入號碼布及姓名，即可找到有你號碼布的相片並下載；相片號碼布由電腦辨識，可能有遺漏或錯誤。",
-      phNeed: "請輸入號碼布及姓名。", phNone: "暫時未有你的相片：請檢查號碼布及姓名；比賽期間相片會陸續加入，可稍後按「更新」。",
+      phNote: "非官方相片，由網站管理員於比賽當日拍攝。輸入號碼布及姓名，即可找到有你號碼布的相片並下載；相片號碼布由電腦辨識，可能有遺漏或錯誤。",
+      phNeed: "請輸入號碼布及姓名。", phNone: "暫時未有你的相片：請檢查號碼布及姓名；相片於賽後陸續上載，可稍後按「更新」。",
       phCount: (n) => `找到 ${n} 張相片`, phOpen: (i, n) => `相片 ${i}／${n}`, phDl: "下載相片", phPrev: "上一張", phNext: "下一張",
       phRemove: "申請移除此相片", phCode: (c) => `相片編號 ${c}（申請移除時請填寫）`, phExpired: "相片保留至 2027 年 8 月 31 日，現已下架。",
-      phKeep: "相片保留至 2027 年 8 月 31 日。", phFail: "未能載入相片，請稍後再試。",
-      invBtn: "匯出邀請卡", csLabel: "榮譽卡款式", cs_dash: "衝線", cs_trail: "山徑", cs_bib: "號碼布", cs_classic: "經典", cardBtn: "匯出榮譽卡", cardSave: "下載圖片", cardShare: "分享", cardClose: "關閉", cardFail: "未能產生圖片，請稍後再試。",
+      phKeep: "相片保留至 2027 年 8 月 31 日。", phUse: "相片供運動員及其家人使用；轉載須保留水印，商業使用須先取得同意。", phFail: "未能載入相片，請稍後再試。",
+      invBtn: "匯出邀請卡", csLabel: "榮譽卡款式", cs_dash: "衝線", cs_trail: "山徑", cs_bib: "號碼布", cs_classic: "經典", cs_cPodium: "榮耀", cs_cTrail: "松山", cs_cSun: "陽光衝線", cs_cArch: "終點拱門", cs_cLeaf: "葉仔山", cardBtn: "匯出榮譽卡", cardSave: "下載圖片", cardShare: "分享", cardClose: "關閉", cardFail: "未能產生圖片，請稍後再試。",
       cardNote: "圖片只使用本網站已公開的成績資料。手機可按「分享」儲存至相簿或傳送給朋友。",
     },
     en: {
@@ -246,15 +247,16 @@
       ctNote: "Unofficial keepsake: results come from the finish-line record and are released category by category after checking against the official results. Official results are published by DSEDJ.",
       ctOpen: "Released: ", ctWait: "Released category by category after the race, once checked.", ctBib: "Bib number", ctName: "Name (as on the start list; Chinese name, or Portuguese name if none)",
       ctGo: "Search", ctNone: "No record found. Check the bib number and name, or the category has not been released yet.", ctNet: "Connection problem. Please try again later.", ctNeed: "Enter your bib number and name.",
+      ctPri: "Primary categories (D and E) have no finish-line timing: once the organiser publishes the top 10 and we have checked it, cards open for those 10 runners only.", ctTop: "Official top 10", ctNoT: "Not published",
       ctCat: "Category", ctPlace: "Place", ctTime: "Time", ctOf: (n) => `${n} finishers`, ctExport: "Export finisher card", ctHist: "See past results",
       ctHeat: (h) => `Heat ${h}`, ctPlaceV: (p) => `#${p}`,
       phBtn: "Race photos", phTitle: (n) => `Edition ${n} race photos`,
       phNote: "Unofficial photos taken during the race by the site editor. Enter your bib number and name to find and download photos showing your bib. Bibs are read by computer, so some photos may be missed or wrong.",
-      phNeed: "Enter your bib number and name.", phNone: "No photos of you yet. Check the bib number and name; photos are added during the race, so try Refresh later.",
+      phNeed: "Enter your bib number and name.", phNone: "No photos of you yet. Check the bib number and name; photos are uploaded gradually after the race, so try Refresh later.",
       phCount: (n) => `${n} photo${n === 1 ? "" : "s"} found`, phOpen: (i, n) => `Photo ${i} of ${n}`, phDl: "Download photo", phPrev: "Previous", phNext: "Next",
       phRemove: "Request removal of this photo", phCode: (c) => `Photo code ${c} (quote it in your request)`, phExpired: "Photos were kept until 31 August 2027 and have now been removed.",
-      phKeep: "Photos are kept until 31 August 2027.", phFail: "Could not load the photo. Please try again later.",
-      invBtn: "Export invitation", csLabel: "Card style", cs_dash: "Sprint", cs_trail: "Trail", cs_bib: "Race bib", cs_classic: "Classic", cardBtn: "Export honours card", cardSave: "Download image", cardShare: "Share", cardClose: "Close", cardFail: "Could not create the image. Please try again.",
+      phKeep: "Photos are kept until 31 August 2027.", phUse: "Photos are for athletes and their families. Keep the watermark when reposting; ask for permission before any commercial use.", phFail: "Could not load the photo. Please try again later.",
+      invBtn: "Export invitation", csLabel: "Card style", cs_dash: "Sprint", cs_trail: "Trail", cs_bib: "Race bib", cs_classic: "Classic", cs_cPodium: "Glory", cs_cTrail: "Guia Hill", cs_cSun: "Sunlit finish", cs_cArch: "Finish arch", cs_cLeaf: "Leaf hill", cardBtn: "Export honours card", cardSave: "Download image", cardShare: "Share", cardClose: "Close", cardFail: "Could not create the image. Please try again.",
       cardNote: "The card uses only results already published on this site. On a phone, use Share to save it to your photos.",
     },
   };
@@ -889,6 +891,8 @@
   function certData(r, ed) {
     const zh = zhOfAbbr(r.abbr), abbr = r.abbr, p = r.pid && PEOPLE.get(r.pid);
     const cz = catZhFull(r.cat), time = r.time_ms == null ? "-" : fmt(r.time_ms / 1000);
+    // 小學組：只有大會公佈的頭十名，不計完賽人數；時間未有公佈則不顯示
+    const top = levelOf(r.cat) === "primary", reg = ((DB.race && DB.race.totals) || {})[r.cat];
     const medal = r.place <= CARD_MEDAL, win = r.place === 1, url = siteUrl(), yr = (DB.race && DB.race.year) || "";
     return {
       name: r.name, namePt: p && p.name_zh ? p.name_pt : "", school: zh, crestImg: DB.crests[abbr] || null, crestAbbr: abbr, crestHue: hueOf(abbr),
@@ -897,9 +901,10 @@
       tier: win ? "gold" : r.place === 2 ? "silver" : medal ? "bronze" : "base",
       title: `第 ${ed} 屆成績`,
       rows: [{ place: r.place, year: yr, edition: ed, cat: cz, gender: r.cat[0], time }],
-      pb: { text: `${cz}完成時間`, label: cz, time, year: yr },
-      source: "資料來源：終點紀錄（已與官方成績核對）",
+      pb: top && r.time_ms == null ? null : { text: `${cz}完成時間`, label: cz, time, year: yr },
+      source: top ? "資料來源：大會公佈頭十名（已核對）" : "資料來源：終點紀錄（已與官方成績核對）",
       cert: { edition: ed, cat: cz, place: r.place, finishers: r.finishers, time,
+              ...(top ? { line: r.time_ms == null ? "大會公佈頭十名" : `大會公佈頭十名・完成時間 ${time}`, finLabel: "參賽人數", finVal: reg || "-" } : {}),
               event: `第 ${ed} 屆學界越野跑比賽・${(DB.race && DB.race.date || "").replace(/^(\d{4})-(\d{2})-(\d{2})$/, (m, y, mo, d) => `${y}年${+mo}月${+d}日`)}` },
       url, qrUrl: r.pid ? `https://${url}/#/p/${r.pid}` : `https://${url}/#/cert`, seed: `c${r.cat}${r.name}`,
     };
@@ -909,6 +914,7 @@
     const event = (params.get("ev") || String(ed)).replace(/[^a-z0-9]/gi, "").toLowerCase();
     view.innerHTML = `<h1 class="page-title">${esc(t("ctTitle", ed))}${event !== String(ed) ? ' <span class="lv-pill demo">TEST</span>' : ""}</h1>
       <p class="lv-note">${esc(t("ctNote"))}</p>
+      <p class="lv-note ct-pri">${esc(t("ctPri"))}</p>
       <div id="ctCats" class="ct-cats"><span>&nbsp;</span></div>
       <form id="ctForm" class="ct-form" autocomplete="off" novalidate>
         <label><span>${esc(t("ctBib"))}</span><input id="ctBib" inputmode="numeric" pattern="[0-9]*" maxlength="4" enterkeyhint="next"></label>
@@ -935,8 +941,8 @@
         <div class="ct-head">${crest(zh, "md")}<div><b>${esc(r.name)}</b><small>${esc(school(zh))}</small></div></div>
         <div class="ct-grid">
           <div><span>${esc(t("ctCat"))}</span><b>${esc(catZhFull(r.cat))}</b>${multi && r.heat ? `<small>${esc(t("ctHeat", r.heat))}</small>` : ""}</div>
-          <div><span>${esc(t("ctPlace"))}</span><b>${esc(t("ctPlaceV", r.place))}</b><small>${esc(t("ctOf", r.finishers))}</small></div>
-          <div><span>${esc(t("ctTime"))}</span><b class="num">${r.time_ms == null ? "-" : fmt(r.time_ms / 1000)}</b></div>
+          <div><span>${esc(t("ctPlace"))}</span><b>${esc(t("ctPlaceV", r.place))}</b><small>${esc(levelOf(r.cat) === "primary" ? t("ctTop") : t("ctOf", r.finishers))}</small></div>
+          <div><span>${esc(t("ctTime"))}</span>${r.time_ms == null && levelOf(r.cat) === "primary" ? `<b class="ct-not">${esc(t("ctNoT"))}</b>` : `<b class="num">${r.time_ms == null ? "-" : fmt(r.time_ms / 1000)}</b>`}</div>
         </div>
         <button class="card-btn" id="ctExport" type="button">${esc(t("ctExport"))}</button>
         ${r.pid && PEOPLE.has(r.pid) ? `<a class="ct-hist" href="#/p/${esc(r.pid)}">${esc(t("ctHist"))} ›</a>` : ""}
@@ -946,13 +952,16 @@
       $("#ctPhotos").onclick = () => { PH_LAST = { event, bib, name }; };
     };
   }
+  // 紀念卡款式：頭三名「光環頒獎台」；中學「松山」「陽光衝線」；小學「終點拱門」「葉仔山」（相片／插畫背景）；其後為榮譽卡四款
+  const certStyles = (r) => [...(r.place <= 3 ? ["cPodium"] : []), ...(levelOf(r.cat) === "primary" ? ["cArch", "cLeaf"] : ["cTrail", "cSun"]), ...CARD_STYLES];
   function openCertCard(r, ed) {
-    let st = "dash";
-    try { const v = localStorage.getItem("xc-card-style"); if (CARD_STYLES.includes(v)) st = v; } catch (e) { /* 無痕模式 */ }
+    const list = certStyles(r);
+    let st = list[0];
+    try { const v = localStorage.getItem("xc-cert-style"); if (r.place > 3 && list.includes(v)) st = v; } catch (e) { /* 無痕模式 */ }
     const draw = (k) => { const d = certData(r, ed), S = window.XCCardStyles; return k !== "classic" && S && S[k] ? S[k](d) : XCCard.render(d); };
     openExport(t("ctExport"), `${r.name}_第${ed}屆完賽紀念卡.png`, draw, {
-      list: CARD_STYLES.map((k) => [k, t("cs_" + k)]), current: st,
-      pick: (k) => { try { localStorage.setItem("xc-card-style", k); } catch (e) { /* 無痕模式 */ } },
+      list: list.map((k) => [k, t("cs_" + k)]), current: st,
+      pick: (k) => { try { localStorage.setItem("xc-cert-style", k); } catch (e) { /* 無痕模式 */ } },
     });
   }
   /* ---------- 比賽相片（第 48 屆起）：號碼布＋姓名兩者對得上才回傳相片（supabase/008_photos.sql 的 xc_photo_lookup） ---------- */
@@ -966,6 +975,7 @@
     const expired = (window.XC_NOW || Date.now()) >= PH_END;   // XC_NOW 只供測試
     view.innerHTML = `<h1 class="page-title">${esc(t("phTitle", ed))}${event !== String(ed) ? ' <span class="lv-pill demo">TEST</span>' : ""}</h1>
       <p class="lv-note">${esc(t("phNote"))} ${esc(t("phKeep"))}</p>
+      <p class="lv-note">${esc(t("phUse"))}</p>
       ${expired ? `<p class="banner">${esc(t("phExpired"))}</p>` : `<form id="phForm" class="ct-form" autocomplete="off" novalidate>
         <label><span>${esc(t("ctBib"))}</span><input id="phBib" inputmode="numeric" pattern="[0-9]*" maxlength="4" enterkeyhint="next"></label>
         <label><span>${esc(t("ctName"))}</span><input id="phName" maxlength="60" enterkeyhint="search" autocapitalize="characters"></label>
@@ -1628,7 +1638,9 @@
             else if (!e && gone.why.get(r.k) === "cutoff") { stt = t("lvMemCutoff"); cls = "dnf"; }
             else if (e) { stt = t("lvMemLap", e.laps, laps, e.place); cls = "run"; }
             else { stt = h.status === "ready" ? t("lvMemNotStarted") : h.status === "running" ? t("lvMemNoPass") : t("lvMemNoFin"); cls = "wait"; }
-            return `<li class="${cls}"><span class="mn">${nm}</span><span class="ms">${cls === "sc" ? `<b class="lv-sc-tag">${t("lvScorer")}</b>` : ""}${esc(stt)}</span></li>`;
+            // 左：名次（完賽＝名次；途中＝暫列名次；未有紀錄＝–）；右：姓名大字、拼音另起一行、狀態在下，名字不再被截斷
+            const badge = e && e.place != null ? e.place : "–";
+            return `<li class="${cls}"><span class="mp" aria-hidden="true">${badge}</span><span class="mb"><span class="mn">${nm}</span><span class="ms">${cls === "sc" ? `<b class="lv-sc-tag">${t("lvScorer")}</b>` : ""}${esc(stt)}</span></span></li>`;
           };
           const sortM = (a, b) => (a.e && a.e.place != null ? a.e.place : 1e9) - (b.e && b.e.place != null ? b.e.place : 1e9);
           let inner = "";
@@ -1692,7 +1704,7 @@
 
   function renderLive(params) {
     const demo = Number(params.get("demo")) || 0;
-    const event = demo ? "demo" : (params.get("ev") || String((DB.race && DB.race.edition) || 48)).replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const event = demo ? "demo" : (params.get("ev") || String((DB.race && DB.race.edition) || 48)).replace(/[^a-z0-9]/gi, "").toLowerCase().replace(/cp$/, ""); // 途經點紀錄（48cp 等）只供終點排序，公眾頁不顯示
     const cats = liveCats();
     // 同一場資料只換組別或畫面：保留已下載的資料及排位紀錄
     if (!LIVE || LIVE.event !== event || LIVE.demo !== demo) LIVE = { event, demo, rev: 0, offset: 0, entries: new Map(), heats: new Map(), loaded: false, cat: null, roster: null, open: new Set(), openTeams: new Set(), heatPin: {}, lastRanks: new Map(), moves: new Map() };
