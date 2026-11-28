@@ -1,4 +1,5 @@
 /* 相片上載（工作人員用）：手機揀相上載；預設人手標號碼布（免費方案，賽後標），site.json 設 photo_ai: true 才改用 Gemini 辨識
+   - site.json 設 photo_auto: true（2026-11-28 起）：電腦掃描到清楚的三位數號碼，經名單及拍攝時段核對後自動公開，不用逐張批准
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
    - 揀相片 → 手機內壓縮成長邊 1280px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
    - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心）：大圖照原檔上載、只移除 EXIF，不壓縮第二次
@@ -26,6 +27,8 @@
   const photos = new Map(); // 伺服器上的相片紀錄（本 event）
   let rev = 0, online = true, quotaUntil = 0, noKey = false;
   const AI = () => !!(SITE && SITE.photo_ai);   // false＝人手標（預設）
+  const AUTO = () => !AI() && !!(SITE && SITE.photo_auto);   // true＝電腦掃描到清楚的三位數號碼即自動公開
+  const isSure = ([b, c]) => c >= OCR_SURE && b >= 100;
 
   /* ---------- 本機佇列（IndexedDB） ---------- */
   const IDB = (() => {
@@ -129,9 +132,11 @@
   const clockOff = (cam) => (st.clock && Number(st.clock[clockKey(cam)])) || 0;
   const fmtOff = (s) => s === 0 ? "準確" : `${s > 0 ? "快" : "慢"} ${Math.floor(Math.abs(s) / 60) ? `${Math.floor(Math.abs(s) / 60)} 分 ` : ""}${Math.abs(s) % 60} 秒`;
 
-  /* ---------- 略過已上載：同一張相片（拍攝時間＋檔案大小）不會上載兩次 ---------- */
-  // 預先壓縮的相片用原檔大小：同一張相經電腦壓縮或直接揀原相上載，都當作同一張
-  const srcKey = (f, ex) => ex ? `x${ex.ms}|${ex.prep ? ex.prep.src : f.size}` : `f${f.name}|${f.size}|${f.lastModified || 0}`;
+  /* ---------- 略過已上載：同一張相片（拍攝時間＋檔案大小＋檔名）不會上載兩次 ---------- */
+  // 預先壓縮的相片用原檔大小及原檔名（不計副檔名）：同一張相經電腦壓縮或直接揀原相上載，都當作同一張
+  // 一定要比對檔名：部分相機（例如 Sony ILCE-7M3）不記秒以下時間、JPEG 大小按 32KB 取整，同一秒連拍的時間及大小完全相同
+  const stem = (name) => String(name).replace(/\.[^.]*$/, "").toLowerCase().slice(0, 120);
+  const srcKey = (f, ex) => ex ? `x${ex.ms}|${ex.prep ? ex.prep.src : f.size}|${stem(f.name)}` : `f${f.name}|${f.size}|${f.lastModified || 0}`;
   const seenAll = store.get("xc-photo-seen", {});
   const seenSet = (ev) => new Set(seenAll[ev] || []);
   function markSeen(ev, keys) {
@@ -242,14 +247,13 @@
         const row = { id: q.id, event: q.event, full_path: p.full, thumb_path: p.thumb, w: q.w, h: q.h, taken_ms: q.taken_ms, taken_src: q.taken_src,
           camera: q.camera || null, clock_off_s: q.clock_off_s || null, src_key: q.src_key || null };
         if (!AI()) Object.assign(row, { status: "pending", reason: "未標號碼布" });
-        // 電腦掃描號碼布（photo_prep.py）：只作建議，工作人員確認後才寫入 bibs 公開
+        // 電腦掃描號碼布（photo_prep.py）：先作建議寫入；是否公開由工作人員確認，或由下一步自動公開（photo_auto）
         // ai_bibs（預先填入）＝信心 ≥ OCR_SURE 且三位數；其餘（含 1–2 位數）放 ai_unsure（列作「可能」）。
         // 第 47 屆官方相簿實測：錯誤讀數多是 1–2 位數（被遮住一半的號碼布「612→61」、頒獎台名次、橫額年份碎片），
         // 用此規則後比賽中相片預先填入的號碼沒有錯誤
         if (!AI() && q.ocr) {
           const asc = (a) => [...new Set(a)].sort((x, y) => x - y);
-          const sure = ([b, c]) => c >= OCR_SURE && b >= 100;
-          Object.assign(row, { ai_bibs: asc(q.ocr.filter(sure).map(([b]) => b)), ai_unsure: asc(q.ocr.filter((x) => !sure(x)).map(([b]) => b)) });
+          Object.assign(row, { ai_bibs: asc(q.ocr.filter(isSure).map(([b]) => b)), ai_unsure: asc(q.ocr.filter((x) => !isSure(x)).map(([b]) => b)) });
         }
         const { error } = await sb.from("xc_photos").upsert(row, { onConflict: "id", ignoreDuplicates: true });
         if (error) throw error;
@@ -257,6 +261,7 @@
       }
       if (q.stage === "row") {
         const r = AI() ? await recognise(q.id) : {};
+        if (AUTO()) await autoPublish(q);   // 失敗（斷網等）會留在佇列重試
         if (r.wait) { q.next_at = Date.now() + r.wait * 1000; q.err = r.msg; await IDB.put(q); return; }
         await IDB.del(q.id);
         queue = queue.filter((x) => x.id !== q.id);
@@ -270,6 +275,21 @@
       q.err = online ? `上載失敗，稍後重試（${q.tries}）` : "離線，恢復網絡後自動續傳";
       await IDB.put(q).catch(() => {});
     }
+  }
+  // 自動公開：清楚的三位數號碼，而且在名單內；正式資料另要相機拍攝時間、該組當時在跑道上（演練用舊相片，不核對時段）
+  // 只公開通過核對的號碼；一個也沒有則留在待覆核。已人手覆核或已公開的紀錄不會被覆蓋
+  async function autoPublish(q) {
+    const sure = [...new Set((q.ocr || []).filter(isSure).map(([b]) => b))].sort((a, b) => a - b);
+    if (!sure.length) return;
+    const { data, error } = await sb.rpc("xc_photo_hints", { p_id: q.id, p_bibs: sure });
+    if (error || !data) throw error || new Error("未能核對號碼布");
+    const timed = q.event !== "test";
+    const ok = !timed || q.taken_src === "exif"
+      ? (data.check || []).filter((c) => c.in_roster && (!timed || c.on_course === true)).map((c) => c.bib) : [];
+    const patch = ok.length ? { bibs: ok, status: "approved", reason: null }
+      : { reason: timed && q.taken_src !== "exif" ? "沒有相機拍攝時間" : timed ? "號碼不在名單或拍攝時段不符" : "號碼不在名單" };
+    const { error: e2 } = await sb.from("xc_photos").update(patch).eq("id", q.id).eq("status", "pending").eq("reviewed", false);
+    if (e2) throw e2;
   }
   // 呼叫 Edge Function；回傳 { wait, msg } 表示稍後再試
   async function recognise(id) {
@@ -374,8 +394,10 @@
       setSync(); return;
     }
     const show = st.tab === "approved" ? appr.sort(byTimeDesc) : pend.sort(byTimeAsc);
-    note.textContent = st.tab === "approved" ? "已公開：運動員可用號碼布＋姓名查到。賽後請逐張再看一次（已覆核者標 ✓）。"
-      : AI() ? "待覆核：未公開。改正號碼布後按「批准公開」，或移除。" : "待標號碼布：按拍攝時間排列。逐張輸入相中號碼布後「批准公開」，會自動跳到下一張。";
+    note.textContent = st.tab === "approved" ? (AUTO() ? "已公開：運動員可用號碼布＋姓名查到。部分由電腦自動公開，發現錯誤可按相片更正或移除（已覆核者標 ✓）。" : "已公開：運動員可用號碼布＋姓名查到。賽後請逐張再看一次（已覆核者標 ✓）。")
+      : AI() ? "待覆核：未公開。改正號碼布後按「批准公開」，或移除。"
+      : AUTO() ? "清楚的三位數號碼會自動公開；這裡是未公開的相片，有需要才逐張輸入號碼布後「批准公開」。"
+      : "待標號碼布：按拍攝時間排列。逐張輸入相中號碼布後「批准公開」，會自動跳到下一張。";
     g.innerHTML = show.length ? show.slice(0, shown).map((p) => `<button class="card" type="button" data-id="${esc(p.id)}">
         <img alt="" loading="lazy" src="${esc(pubUrl(p.thumb_path))}">
         <div class="meta">

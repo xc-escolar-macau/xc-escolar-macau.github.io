@@ -149,6 +149,8 @@ python -m http.server 8765 --directory docs
 - 工作人員頁 `photo-admin.html`（不在網站任何位置連結；與終點輸入同一套帳戶）：一次揀多張相片 → 手機內壓縮成長邊 1600px 大圖＋400px 縮圖（WebP，Safari 不支援時改 JPEG；重新編碼後不含任何 EXIF／GPS）→ 上載 → Edge Function 辨識號碼布；壓縮後的檔案先存於本機 IndexedDB 佇列，斷網或重新整理都不會遺失
 - 自動公開條件（`supabase/008_photos.sql` 的 `xc_photo_judge`）：讀出至少一個號碼布、全部在秩序冊內、AI 沒有標示不確定、拍攝時間（EXIF）該組在跑道上——優先用計時系統 `xc_live_heats` 的實際起跑時間（起跑前 15 分鐘至本組最後一筆終點紀錄後 10 分鐘），沒有起跑紀錄的組別用 `xc_photo_windows`（按時間表估算，另加 30 分鐘寬限）；其餘留在「待覆核」，改正號碼布後「批准公開」或「移除」（刪除檔案）
 - 公眾頁 `#/photos`（測試：`#/photos?ev=test`）：號碼布＋秩序冊姓名兩者對得上才回傳該號碼布的已公開相片（`xc_photo_lookup`，不回傳同框其他人的號碼布）；可下載、分享、申請移除（顯示相片編號）；入口：賽前預覽、即時成績、完賽紀念卡結果
+- 免費方案（現行）：電腦先以 `scripts/photo_prep.py` 壓縮及掃描號碼布，再上載；`docs/data/site.json` 的 `photo_auto: true` 時，清楚的三位數號碼經名單及拍攝時段核對（`xc_photo_hints`）後自動公開，演練（event test）只核對名單；其餘留在「待覆核」
+- 略過重複上載：比對拍攝時間、原檔大小及原檔名（部分相機不記秒以下時間，連拍相片的時間及大小相同）
 - 保留期：2027-08-31 之後公眾查詢不再回傳相片（資料庫及網頁兩邊都有日期），屆時刪除 bucket `xc-photos` 內的檔案
 - Edge Function：`supabase/functions/xc-photo-bibs/`（以呼叫者的登入身份讀寫，不用 service role）；Gemini 金鑰只存 Supabase secrets `GEMINI_API_KEY`，型號可用 `GEMINI_MODEL` 改；配額用完（429）時上載頁按建議時間自動重試
 - 部署：在 Supabase 執行 `008_photos.sql` → `supabase functions deploy xc-photo-bibs` → 後台 Edge Functions secrets 加入 `GEMINI_API_KEY`

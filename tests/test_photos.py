@@ -157,7 +157,7 @@ def test_photos_page_after_expiry(pub):
 def adm(browser, base_url):
     ctx = _ctx(browser, base_url)
     db = {"photos": {}, "files": {}, "rev": itertools.count(1), "fn": [], "removed": [], "fn_mode": ["429", "ok"],
-          "ai": True, "hints": [], "near": [], "store": [], "clock": {}, "reclock": [],
+          "ai": True, "auto": False, "hints": [], "near": [], "store": [], "clock": {}, "reclock": [],
           "photo_cfg": {"url": "https://photostest.supabase.co", "key": "sb_publishable_phtest"}}   # ai：site.json 的 photo_ai（正式預設 false＝人手標）
     # photo_cfg：site.json 的 photos（相片檔案所在的獨立相片專案；None＝沿用主專案 storage）
     roster = [{"bib": 24, "cat": "FC", "heat": 1, "abbr": "CDSJ5", "name": "李蕙伃"},
@@ -237,7 +237,7 @@ def adm(browser, base_url):
             q = json.loads(req.post_data or "{}"); db["hints"].append(q)
             names = {r["bib"] for r in roster}
             return ok(route, {"taken_ms": db["photos"].get(q["p_id"], {}).get("taken_ms"), "near": db["near"],
-                              "check": [{"bib": b, "in_roster": b in names, "on_course": b != 7} for b in q.get("p_bibs") or []],
+                              "check": [{"bib": b, "in_roster": b in names, "on_course": db.get("extra_check", {}).get(b, b != 7)} for b in q.get("p_bibs") or []],
                               "cats": db.get("cats", [{"cat": "MC", "heat": 1}, {"cat": "MC", "heat": 2}])})
         if "/functions/v1/xc-photo-bibs" in u:
             pid = json.loads(req.post_data)["id"]
@@ -272,7 +272,7 @@ def adm(browser, base_url):
     site_json = json.loads((pathlib.Path(__file__).resolve().parents[1] / "docs/data/site.json").read_text(encoding="utf-8"))
 
     def site(route):
-        body = {**site_json, "photo_ai": db["ai"], "photos": db["photo_cfg"]}
+        body = {**site_json, "photo_ai": db["ai"], "photo_auto": db["auto"], "photos": db["photo_cfg"]}
         return route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
     ctx.route("**/data/site.json*", site)
     pg = ctx.new_page()
@@ -647,7 +647,7 @@ def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
     _until(page, lambda: len(page.db["photos"]) == 1)
     row = next(iter(page.db["photos"].values()))
     assert row["taken_ms"] == int(datetime(2026, 11, 29, 8, 10, tzinfo=MO).timestamp() * 1000) and row["taken_src"] == "exif"
-    assert row["camera"] == "TestCam" and row["src_key"] == f"x{row['taken_ms']}|{orig.stat().st_size}"
+    assert row["camera"] == "TestCam" and row["src_key"] == f"x{row['taken_ms']}|{orig.stat().st_size}|dscf0001"
     assert (row["w"], row["h"]) == (1280, 853)
     full, thumb = page.db["files"][row["full_path"]], page.db["files"][row["thumb_path"]]
     # 大圖：沒有 EXIF、不含相機型號；影像資料與壓縮檔逐位相同（沒有重新編碼）
@@ -779,3 +779,79 @@ def test_photo_admin_clock_shared_serial_and_fix_uploaded(adm, tmp_path):
     assert page.db["reclock"] == [{"p_event": "48", "p_camera": "Canon EOS R6 #999999", "p_off_s": -12}]
     assert by["Canon EOS R6 #999999"]["taken_ms"] == base + 12000 and by["Canon EOS R6 #999999"]["clock_off_s"] == -12
     expect(page.locator("#clockList [data-fix]")).to_have_count(0)
+
+
+def test_photo_admin_burst_same_time_and_size_all_uploaded(adm, tmp_path):
+    """連拍：拍攝時間（無秒以下）及檔案大小完全相同、檔名不同的相片全部上載；同一檔再揀才略過"""
+    page = adm
+    page.db["ai"] = False
+    _login(page)
+    data = _jpeg()
+    files = [tmp_path / f"BCF0030{i}.jpg" for i in (8, 9)]
+    for f in files:
+        f.write_bytes(data)
+    page.set_input_files("#files", [str(f) for f in files])
+    _until(page, lambda: len(page.db["photos"]) == 2)
+    assert len({r["src_key"] for r in page.db["photos"].values()}) == 2
+    page.set_input_files("#files", [str(f) for f in files])
+    expect(page.locator("#prep")).to_contain_text("已加入 0 張；略過 2 張")
+    assert len(page.db["photos"]) == 2
+
+
+def _scanned(tmp_path, name, bibs, when="2026:11:29 08:10:00"):
+    """模擬 photo_prep.py 的輸出：帶掃描結果的 WebP"""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    import photo_prep
+    src = Image.open(io.BytesIO(_jpeg(when=when)))
+    ex = photo_prep.keep_exif(src.getexif(), 4321, bibs)
+    f = tmp_path / name
+    src.convert("RGB").resize((1280, 853)).save(f, "WEBP", quality=80, exif=ex.tobytes())
+    return f
+
+
+@pytest.mark.parametrize("event,published", [("48", [405]), ("test", [405])])
+def test_photo_admin_auto_publish_clear_bibs(adm, tmp_path, event, published):
+    """photo_auto：只公開清楚的三位數號碼（在名單；正式資料另要時段相符）；不肯定、不在名單的不公開"""
+    page = adm
+    page.db["ai"] = False
+    page.db["auto"] = True
+    _login(page)
+    page.select_option("#event", event)
+    expect(page.locator("#sync")).to_contain_text("已同步")
+    f = _scanned(tmp_path, "A1.webp", [(405, 97), (999, 99), (24, 99), (301, 50)])
+    page.set_input_files("#files", [str(f)])
+    _until(page, lambda: any(r["status"] == "approved" for r in page.db["photos"].values()))
+    row = next(iter(page.db["photos"].values()))
+    assert row["event"] == event and row["bibs"] == published and row["reviewed"] is False and row["reason"] is None
+    assert page.db["hints"][-1]["p_bibs"] == [405, 999]   # 1–2 位數及低信心讀數不會自動公開
+    expect(page.locator("#nApproved")).to_have_text("1")
+
+
+def test_photo_admin_auto_publish_checks_time_only_for_official(adm, tmp_path):
+    """號碼在名單但拍攝時段不在跑道上（假資料 on_course＝False）：正式留在待覆核，演練照樣公開"""
+    page = adm
+    page.db["ai"] = False
+    page.db["auto"] = True
+    page.db["extra_check"] = {405: False}
+    _login(page)
+    page.set_input_files("#files", [str(_scanned(tmp_path, "B1.webp", [(405, 97)]))])
+    _until(page, lambda: any(r.get("reason") == "號碼不在名單或拍攝時段不符" for r in page.db["photos"].values()))
+    assert next(iter(page.db["photos"].values()))["status"] == "pending"
+    page.select_option("#event", "test")
+    page.set_input_files("#files", [str(_scanned(tmp_path, "B2.webp", [(405, 97)], "2025:11:30 08:10:00"))])
+    _until(page, lambda: any(r["event"] == "test" and r["status"] == "approved" for r in page.db["photos"].values()))
+
+
+def test_photo_admin_auto_publish_leaves_unclear_pending(adm, tmp_path):
+    """沒有清楚的三位數號碼、或沒有掃描結果：不公開"""
+    page = adm
+    page.db["ai"] = False
+    page.db["auto"] = True
+    _login(page)
+    plain = tmp_path / "C1.jpg"; plain.write_bytes(_jpeg())
+    page.set_input_files("#files", [str(_scanned(tmp_path, "C2.webp", [(7, 99), (405, 40)], "2026:11:29 08:10:05")), str(plain)])
+    expect(page.locator("#nPending")).to_have_text("2")
+    expect(page.locator("#nQueue")).to_have_text("0")
+    assert all(r["status"] == "pending" and r["bibs"] == [] for r in page.db["photos"].values())
+    assert not page.db["hints"]
