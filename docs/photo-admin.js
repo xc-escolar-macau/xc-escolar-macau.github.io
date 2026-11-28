@@ -3,7 +3,7 @@
    - 登入：與終點輸入同一套帳戶（xc_live_admins）
    - 揀相片 → 手機內壓縮成長邊 1280px 大圖＋400px 縮圖（重新編碼，位置等 EXIF 資料不會上載）；先讀出拍攝時間另存
    - 大批相片先在電腦用 scripts/photo_prep.py 壓縮（多核心）：沒有水印時大圖照原檔上載、只移除 EXIF，不壓縮第二次
-   - site.json 設 photo_watermark（文字）：大圖及縮圖右下角加水印（2026-11-28 起；已上載的相片不追溯）
+   - site.json 設 photo_watermark: true：大圖及縮圖加水印（底部標誌＋中央淡印）（2026-11-28 起；已上載的相片不追溯）
    - photo_prep.py 亦在本機掃描號碼布（ocr=）：人手標時預先填入名單內、拍攝時段在跑道上的號碼；不肯定的列作「可能」；仍須工作人員確認才公開
    - 相片檔案放獨立的相片專案（site.json photos；另一個 Supabase organization，超額亦不影響計時）：
      上載前由 Edge Function xc-photo-store 核對管理員身分並簽發上載網址；移除亦經該函式
@@ -152,19 +152,40 @@
     return false;
   }
 
-  /* ---------- 水印：右下角半透明白字，壓縮時直接畫入相片（網上看到及下載的都有）；文字在 site.json photo_watermark ---------- */
-  const MARK = () => (SITE && SITE.photo_watermark) || "";
-  function watermark(g, w, h, text) {
-    const long = Math.max(w, h), font = (s) => `700 ${s}px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif`;
-    let size = Math.max(10, Math.round(long * 0.022));
-    g.font = font(size);
-    const room = w * 0.6, tw = g.measureText(text).width;   // 直度相片：最多佔相片寬六成
-    if (tw > room) { size = Math.floor(size * room / tw); g.font = font(size); }
-    const m = Math.round(long * 0.014);
-    g.textAlign = "right"; g.textBaseline = "bottom";
-    g.shadowColor = "rgba(0,0,0,.8)"; g.shadowBlur = size * 0.25; g.shadowOffsetY = Math.max(1, size * 0.06);
-    g.fillStyle = "rgba(255,255,255,.72)";
-    g.fillText(text, w - m, h - m);
+  /* ---------- 水印（site.json photo_watermark: true）：壓縮時直接畫入相片（網上看到及下載的都有） ----------
+     底部深色漸層＋左「XC 澳門學界越野跑」右「體報」，另加中央斜放淡印；素材 img/wm/（用字型預先畫好，各裝置一致） */
+  const MARK = () => !!(SITE && SITE.photo_watermark);
+  const WM_U = 40;   // 素材的基本單位（與產生素材時相同）
+  let wmImgs = null;
+  async function loadMark() {
+    if (!MARK() || wmImgs) return;
+    const load = (n) => new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = () => bad(new Error(`水印圖 ${n} 載入失敗`)); im.src = `img/wm/${n}.png?v=20261128`; });
+    const [xc, mid, tb] = await Promise.all(["xc", "xc-mid", "tibao"].map(load));
+    wmImgs = { xc, mid, tb };
+  }
+  function watermark(g, w, h) {
+    const { xc, mid, tb } = wmImgs, port = h > w, aspect = tb.width / tb.height;
+    // 中央淡印：先在另一畫布合成，再整組以 26% 斜放
+    const u = w * (port ? 0.455 : 0.36) / 19.2, bigH = w * (port ? 0.265 : 0.21) / aspect * 2.1, bigW = bigH * aspect;
+    const k = u * 1.25 / WM_U, midW = mid.width * k, midH = mid.height * k;
+    const group = document.createElement("canvas");
+    group.width = Math.ceil(Math.max(bigW, midW)); group.height = Math.ceil(bigH + u + midH);
+    const q = group.getContext("2d"); q.imageSmoothingQuality = "high";
+    q.drawImage(tb, (group.width - bigW) / 2, 0, bigW, bigH);
+    q.drawImage(mid, (group.width - midW) / 2, bigH + u, midW, midH);
+    g.save();
+    g.globalAlpha = 0.26; g.shadowColor = "rgba(0,0,0,.8)"; g.shadowBlur = u * 0.3;
+    g.translate(w / 2, h / 2); g.rotate(-18 * Math.PI / 180); g.drawImage(group, -group.width / 2, -group.height / 2);
+    g.restore();
+    // 底部：漸層帶＋左右標誌
+    const tw = w * (port ? 0.195 : 0.16), th = tw / aspect, m = w * 0.028;
+    const s = w * (port ? 0.36 : 0.28) / 19.2 / WM_U, xw = xc.width * s, xh = xc.height * s;
+    const shade = g.createLinearGradient(0, h - th * 1.9, 0, h);
+    shade.addColorStop(0, "rgba(8,10,14,0)"); shade.addColorStop(1, "rgba(8,10,14,.82)");
+    g.fillStyle = shade; g.fillRect(0, h - th * 1.9, w, th * 1.9);
+    const row = Math.max(xh, th), top = h - m - row;
+    g.drawImage(xc, m, top + (row - xh) / 2, xw, xh);
+    g.drawImage(tb, w - m - tw, top + (row - th) / 2, tw, th);
   }
 
   /* ---------- 壓縮：Safari 不支援輸出 WebP 時改用 JPEG ---------- */
@@ -173,7 +194,7 @@
     const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
     const c = document.createElement("canvas"); c.width = w; c.height = h;
     const g = c.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(bmp, 0, 0, w, h);
-    if (MARK()) watermark(g, w, h, MARK());
+    if (MARK()) watermark(g, w, h);
     const blob = (type, quality) => new Promise((ok) => c.toBlob(ok, type, quality));
     let b = await blob("image/webp", q);
     if (!b || b.type !== "image/webp") b = await blob("image/jpeg", q + 0.03);
@@ -184,6 +205,9 @@
     const el = $("#prep"), ev = st.event, local = seenSet(ev);
     let done = 0, bad = 0, skip = 0, future = 0, added = 0;
     el.hidden = false;
+    try { await loadMark(); } catch (e) {   // 寧可不上載，也不可上載沒有水印的相片
+      console.warn(e); el.textContent = "水印圖載入失敗，沒有加入任何相片；請檢查網絡後再揀相"; $("#files").value = ""; return;
+    }
     for (const f of list) {
       el.textContent = `壓縮中 ${done + 1}／${list.length}……`;
       try {
@@ -695,6 +719,7 @@
   async function loadStatic() {
     const [site, race] = await Promise.all(["data/site.json", "data/race48.json"].map((u) => fetch(u, { cache: "no-cache" }).then((r) => r.json())));
     SITE = site;
+    loadMark().catch(() => { /* 揀相時再試 */ });   // 先載入水印圖：之後斷網仍可加入相片
     for (const s of race.schools) SCHOOL.set(s.abbr, s.zh);
     sb = supabase.createClient(site.views.url, site.views.key, { auth: { persistSession: true, autoRefreshToken: true } });
     // 相片檔案放獨立的相片專案（site.json photos）；未設定則沿用主專案 storage

@@ -664,22 +664,22 @@ def test_photo_admin_prepared_on_computer_not_recompressed(adm, tmp_path):
     assert len(page.db["photos"]) == 1
 
 
-def _bright(blob, box):
-    """box（佔寬高的比例）內明顯比底色亮的像素數目"""
+def _count(blob, box, lo, hi=255):
+    """box（佔寬高的比例）內灰度介乎 lo–hi 的像素數目"""
     im = Image.open(io.BytesIO(blob)).convert("L")
     w, h = im.size
-    return sum(1 for v in im.crop((int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h))).tobytes() if v > 150)
+    return sum(1 for v in im.crop((int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h))).tobytes() if lo <= v <= hi)
 
 
 @pytest.mark.parametrize("size", [(6000, 4000), (4000, 6000)])
 def test_photo_admin_watermark(adm, tmp_path, size):
-    """site.json photo_watermark：大圖及縮圖右下角畫水印（直接揀原相、電腦壓縮檔都要有），其他位置不受影響"""
+    """site.json photo_watermark：大圖及縮圖有底部左右標誌及中央淡印（直接揀原相、電腦壓縮檔都要有）"""
     import sys
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     import photo_prep
     page = adm
     page.db["ai"] = False
-    page.db["watermark"] = json.loads((pathlib.Path(__file__).resolve().parents[1] / "docs/data/site.json").read_text(encoding="utf-8"))["photo_watermark"]
+    page.db["watermark"] = True
     _login(page)
     plain = tmp_path / "A0001.jpg"; plain.write_bytes(_jpeg(*size, "2026:11:29 08:10:00", (30, 60, 90)))
     orig = tmp_path / "B0001.jpg"; orig.write_bytes(_jpeg(*size, "2026:11:29 08:11:00", (30, 60, 90)))
@@ -692,9 +692,25 @@ def test_photo_admin_watermark(adm, tmp_path, size):
             blob = page.db["files"][row[key]]
             assert blob[:4] == b"RIFF" and b"Exif" not in blob and b"TestCam" not in blob
             assert max(Image.open(io.BytesIO(blob)).size) == edge
-            assert _bright(blob, (0.4, 0.93, 1, 1)) > 20          # 右下角有白字
-            assert _bright(blob, (0, 0, 1, 0.9)) == 0             # 其餘位置沒有
-            assert _bright(blob, (0, 0.9, 0.35, 1)) == 0          # 左下角沒有（直度相片亦只佔右邊約六成）
+            assert _count(blob, (0, 0.85, 0.5, 1), 170) > 20          # 左下：我方標誌
+            assert _count(blob, (0.7, 0.85, 1, 1), 170) > 20          # 右下：體報
+            assert _count(blob, (0.2, 0.3, 0.8, 0.7), 80, 150) > 100  # 中央：淡印（比底色亮、比標誌暗）
+            assert _count(blob, (0.2, 0.3, 0.8, 0.7), 170) == 0
+            assert _count(blob, (0, 0, 0.15, 0.1), 70) == 0           # 左上角不受影響
+
+
+def test_photo_admin_watermark_missing_blocks_upload(adm, tmp_path):
+    """水印圖載入失敗：不加入、不上載任何相片"""
+    page = adm
+    page.db["ai"] = False
+    page.db["watermark"] = True
+    page.context.route("**/img/wm/**", lambda r: r.fulfill(status=404, body=""))
+    _login(page)
+    f = tmp_path / "A0001.jpg"; f.write_bytes(_jpeg())
+    page.set_input_files("#files", [str(f)])
+    expect(page.locator("#prep")).to_contain_text("水印圖載入失敗")
+    page.wait_for_timeout(500)
+    assert not page.db["photos"] and not page.db["files"]
 
 
 def test_photo_admin_prefills_computer_bib_scan(adm, tmp_path):
